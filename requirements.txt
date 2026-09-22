@@ -1,0 +1,6 @@
+duckdb
+jupyterlab
+matplotlib
+numpy
+pandas
+scipy
