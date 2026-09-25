@@ -120,40 +120,40 @@ Defined a **geographic controlled experiment** as the primary source of aggregat
 
 ### Experiment design
 
-* 20 markets
-* 10 treatment markets
-* 10 control markets
+* 20 areas
+* 10 treatment areas
+* 10 control areas
 * 28-day experiment
 * Treatment receives a 25% increase in total marketing spend
 * Control remains at baseline spend
 
-### Market definition
+### Area definition
 
-A **market** is a geographic business unit with independently observable marketing activity and customer outcomes.
+An **area** is a geographic business unit with independently observable marketing activity and customer outcomes.
 
-Markets do not need to be identical in size, purchasing power, or customer behavior.
+The project uses **area** rather than market as the geographic unit.
 
 ### Assignment approach
 
-Treatment and control markets will be assigned using **stratified randomization based on pre-experiment market characteristics**.
+Treatment and control areas will be assigned using **stratified randomization based on pre-experiment area characteristics**.
 
 Potential characteristics discussed for stratification and balance checks include:
 
 * Baseline purchases
 * Baseline revenue
 * Baseline marketing spend
-* Market size
+* Area size
 * Historical purchase behavior
 * Average order value
 * Customer mix
 
 ### Reasoning
 
-We considered the fact that geographic markets can differ materially in purchasing power and purchase behavior.
+We considered the fact that geographic areas can differ materially in purchasing power and purchase behavior.
 
-Rather than manually selecting markets that appear similar, the design uses pre-period characteristics to structure randomization, followed by baseline-balance and pre-trend diagnostics.
+Rather than manually selecting areas that appear similar, the design uses pre-period characteristics to structure randomization, followed by baseline-balance and pre-trend diagnostics.
 
-With only 20 markets, perfect balance is not expected. The objective is credible comparability, not identical markets.
+With only 20 areas, perfect balance is not expected. The objective is credible comparability, not identical areas.
 
 ---
 
@@ -178,7 +178,7 @@ Supporting outcomes include:
 * Purchases
 * Revenue
 
-The key identifying assumption is that treatment and control markets would have followed sufficiently similar trends in the absence of the treatment.
+The key identifying assumption is that treatment and control areas would have followed sufficiently similar trends in the absence of the treatment.
 
 Planned diagnostics include:
 
@@ -187,10 +187,10 @@ Planned diagnostics include:
 * Treatment exposure
 * Contamination
 * Seasonality
-* Market shocks
+* Area shocks
 * Statistical uncertainty
 
-No experiment estimation was performed today.
+No experiment estimation was performed on Day 1.
 
 ---
 
@@ -232,17 +232,23 @@ The project will not attribute the aggregate experiment effect to an individual 
 
 Defined the synthetic data as one coherent business and data-generating process rather than independent random CSV files.
 
+### Business context
+
+The company is an **online travel platform (OTA) focused on hotel bookings**.
+
+The customer journey is expected to involve research, comparison, multiple visits, and interactions across several marketing channels before purchase.
+
 ### Historical period
 
-The planned design contains approximately **18 months of historical data**, followed by the experiment period and an observation window for downstream customer behavior.
+The planned design contains **18 months of historical data**, followed by the experiment period and a post-experiment observation window.
 
-Exact dates have not yet been defined.
+Exact dates were not defined on Day 1.
 
-### Market heterogeneity
+### Area heterogeneity
 
-Markets may differ in:
+Areas may differ in:
 
-* Market size
+* Area size
 * Baseline demand
 * Purchase propensity
 * Average order value
@@ -285,7 +291,7 @@ data/simulation_truth/
 
 true_channel_incrementality.csv
 true_customer_value.csv
-true_market_effect.csv
+true_area_effect.csv
 true_response_curves.csv
 ```
 
@@ -320,7 +326,7 @@ Potential issues include:
 
 ### Boundary
 
-No data-quality issues were implemented today.
+No data-quality issues were implemented on Day 1.
 
 The exact issues and their rates remain open until the synthetic data-generation design is implemented.
 
@@ -343,14 +349,15 @@ The following were defined and agreed:
 * Incremental contribution margin as the primary outcome
 * Purchase as the standard campaign conversion outcome
 * Funnel / attribution / incrementality / economics framework
-* Definition of a market
+* Definition of an area
 * Geographic experiment structure
-* 20-market treatment/control design
+* 20-area treatment/control design
 * 25% treatment spend increase
 * Stratified randomization approach
 * Baseline-balance and pre-trend validation approach
 * Difference-in-Differences as the primary estimator
 * Aggregate versus channel-level causal distinction
+* OTA / hotel-booking business context
 * Synthetic-world design
 * Hidden simulation-truth structure
 
@@ -360,7 +367,7 @@ No implementation was completed.
 
 ## 11. Not Completed
 
-The following were discussed as future work but were **not completed today**:
+The following were discussed as future work but were **not completed on Day 1**:
 
 * Data generation
 * Data-quality injection
@@ -380,28 +387,520 @@ The following were discussed as future work but were **not completed today**:
 
 ---
 
-## 12. Open Questions
-
-The following implementation details remain unresolved:
-
-* Exact historical dates
-* Exact post-experiment observation window
-* Final market characteristics and stratification variables
-* Exact market identifiers
-* Exact market-level implementation of the 25% treatment increase
-* Exact channel response-curve structure
-* Detailed customer behavior rules
-* Product categories and variable-cost structure
-* Exact data-quality issues and their rates
-* How aggregate experiment evidence will be connected to channel-level marginal economics
-* Final operational constraints for the $2M allocation
-
-These are open design questions, not missing results.
-
----
-
 ## Day 1 Conclusion
 
 Day 1 established the business question, measurement framework, causal experiment design, and synthetic-world structure needed to build the project consistently.
 
 The important boundary is that **Day 1 produced design decisions, not analytical results**. No synthetic data or analysis was executed yet.
+
+---
+
+# Day 2 - Data Architecture
+
+**Status:** Completed
+**Focus:** Translate the Day 1 business and measurement design into a concrete source-data architecture before generating synthetic data.
+
+---
+
+## Objective
+
+Define what data is required, what each row represents, how records are identified and joined, and how the source data will support attribution, incrementality, customer economics, channel response, and budget optimization.
+
+The main goal was to establish the architecture before implementation so that Day 3 can generate one coherent synthetic business rather than disconnected datasets.
+
+---
+
+## 1. Source Data Architecture
+
+Six source tables were defined and locked:
+
+1. `areas`
+2. `experiment_assignment`
+3. `marketing_performance`
+4. `customers`
+5. `marketing_touchpoints`
+6. `transactions`
+
+The source layer is intentionally separated from downstream analytical transformations.
+
+---
+
+## 2. `areas`
+
+**Grain:** one row per area.
+
+| Column      | Purpose               |
+| ----------- | --------------------- |
+| `area_id`   | Primary identifier    |
+| `area_name` | Descriptive area name |
+| `area_size` | Optional metadata     |
+
+### Decision
+
+`area_size` will not be used analytically.
+
+Baseline demand, revenue, purchase behavior, and historical marketing performance will not be stored in this table. Those characteristics will be derived from historical data.
+
+---
+
+## 3. `experiment_assignment`
+
+**Grain:** one row per area per experiment.
+
+| Column             | Purpose               |
+| ------------------ | --------------------- |
+| `experiment_id`    | Experiment identifier |
+| `area_id`          | Assigned area         |
+| `experiment_group` | Treatment or control  |
+| `assignment_date`  | Assignment date       |
+
+**Key:** `experiment_id + area_id`
+
+### Decision
+
+Baseline metrics, treatment spend, channel, and treatment effects will not be stored in this table.
+
+---
+
+## 4. `marketing_performance`
+
+**Raw grain:** one campaign × channel × date.
+
+| Column          | Purpose                                   |
+| --------------- | ----------------------------------------- |
+| `date`          | Marketing activity date                   |
+| `channel`       | Google, Meta, TikTok, or CRM              |
+| `campaign_id`   | Campaign identifier                       |
+| `campaign_name` | Campaign name containing area information |
+| `spend`         | Marketing spend                           |
+| `impressions`   | Impressions delivered                     |
+| `clicks`        | Clicks generated                          |
+
+### Decision
+
+`area_id` will **not** be stored in the raw marketing table.
+
+Area will be derived from the campaign naming convention.
+
+Example:
+
+```text
+BrandSearch_JKT
+        ↓
+campaign_name parsing
+        ↓
+area_id = JKT
+```
+
+### Reasoning
+
+This reflects a realistic marketing-data situation where geographic information may be embedded in campaign naming rather than provided as a clean analytical field.
+
+---
+
+## 5. `customers`
+
+**Grain:** one row per customer.
+
+| Column        | Purpose             |
+| ------------- | ------------------- |
+| `customer_id` | Customer identifier |
+| `area_id`     | Customer's area     |
+
+### Decision
+
+`acquisition_date` and `customer_segment` will not be stored as source attributes.
+
+They will be derived later from observed customer behavior.
+
+This keeps analytical definitions separate from the source customer data.
+
+---
+
+## 6. `marketing_touchpoints`
+
+**Raw grain:** one customer click or marketing interaction.
+
+| Column                 | Purpose                                   |
+| ---------------------- | ----------------------------------------- |
+| `touchpoint_id`        | Unique touchpoint identifier              |
+| `customer_id`          | Customer associated with the interaction  |
+| `touchpoint_timestamp` | Exact interaction timestamp               |
+| `channel`              | Marketing channel                         |
+| `campaign_id`          | Campaign identifier                       |
+| `campaign_name`        | Campaign name containing area information |
+
+### Decision
+
+`area_id` will be derived from `campaign_name`, consistent with `marketing_performance`.
+
+### Touchpoint definition
+
+A touchpoint represents a meaningful customer-level marketing interaction, specifically a **click** for this project.
+
+Impressions will not be stored as individual customer-level touchpoints.
+
+### Reasoning
+
+Impressions are important for overall marketing performance but would create a much larger customer-level dataset without adding equivalent value to the planned multi-touch attribution analysis.
+
+Keeping clicks as touchpoints also makes the customer journey more interpretable:
+
+```text
+Marketing exposure
+      ↓
+Click
+      ↓
+Customer touchpoint
+      ↓
+Purchase
+```
+
+---
+
+## 7. `transactions`
+
+**Grain:** one transaction / purchase.
+
+| Column             | Purpose                                  |
+| ------------------ | ---------------------------------------- |
+| `transaction_id`   | Transaction identifier                   |
+| `customer_id`      | Customer associated with the transaction |
+| `transaction_date` | Purchase date                            |
+| `revenue`          | Transaction revenue                      |
+| `subsidy`          | Business-funded subsidy                  |
+| `discount`         | Discount applied                         |
+| `cancelled`        | Cancellation indicator                   |
+
+### Decision
+
+Transaction economics are defined as:
+
+```text
+Variable Cost
+=
+Subsidy + Discount
+
+Contribution Margin
+=
+Revenue - Subsidy - Discount
+```
+
+Marketing spend remains exclusively in `marketing_performance` and is not included in transaction-level variable cost.
+
+---
+
+## 8. Source Table Relationships
+
+The core relationships were defined as:
+
+```text
+areas
+  │
+  ├── experiment_assignment
+  │
+  ├── customers
+  │
+  └── marketing_performance
+          │
+          └── campaign_name → derive area_id
+
+
+customers
+  │
+  ├── marketing_touchpoints
+  │       │
+  │       └── campaign_name → derive area_id
+  │
+  └── transactions
+```
+
+The customer journey therefore connects:
+
+```text
+Customer
+   ↓
+Marketing Touchpoints
+   ↓
+Transaction
+```
+
+while the experiment connects:
+
+```text
+Area
+   ↓
+Experiment Assignment
+   ↓
+Marketing Spend
+   ↓
+Customer Behavior
+   ↓
+Transactions
+```
+
+---
+
+## 9. Attribution Architecture
+
+The attribution design was finalized during Day 2.
+
+### Decision
+
+**Primary methodology:** Multi-touch attribution
+
+**Comparison baseline:** Last-touch attribution
+
+Last-touch is not the primary methodology and will only be used as a comparison point.
+
+### Attribution as a derived layer
+
+Attribution weights will not be generated as source data.
+
+The source data will contain:
+
+* Customer interactions
+* Marketing touchpoints
+* Transactions
+
+The attribution layer will then be calculated from those records.
+
+This creates the following architecture:
+
+```text
+Marketing Touchpoints
+        +
+Transactions
+        ↓
+Multi-touch Attribution
+```
+
+This keeps attribution logic separate from the underlying business data.
+
+---
+
+## 10. Attribution Window
+
+The primary attribution window was set to **14 days**.
+
+A touchpoint is eligible to receive attribution credit for a purchase if it occurred within 14 days before that purchase.
+
+### Reasoning
+
+The business is an OTA / hotel-booking platform.
+
+The customer journey can involve:
+
+* Research
+* Hotel comparison
+* Multiple visits
+* Waiting before purchase
+* Multiple marketing interactions
+
+A 7-day window was considered too restrictive for this type of consideration journey.
+
+A 30-day window could increase the likelihood of assigning credit to older interactions that have a weaker relationship with the eventual purchase.
+
+Therefore:
+
+**14 days is the primary attribution window.**
+
+Other windows may be considered later as sensitivity checks, but they are not part of the primary methodology.
+
+---
+
+## 11. Attribution vs Incrementality
+
+The distinction between attribution and incrementality was reinforced through the data architecture.
+
+### Attribution
+
+```text
+Which marketing touchpoints receive credit for a purchase?
+```
+
+### Incrementality
+
+```text
+Did additional marketing activity cause additional business outcomes?
+```
+
+The attribution layer is therefore not used as causal evidence.
+
+Incrementality will be evaluated through the geographic experiment and Difference-in-Differences.
+
+---
+
+## 12. Time Architecture
+
+The project timeline was expanded and finalized.
+
+### Historical period
+
+**18 months**
+
+Used to establish:
+
+* Historical area differences
+* Baseline demand
+* Customer behavior
+* Marketing behavior
+* Seasonality
+* Pre-experiment trends
+
+### Experiment period
+
+**28 days**
+
+Used for the geographic treatment/control experiment.
+
+### Post-experiment observation
+
+**90 days**
+
+Used to observe downstream customer behavior and support customer economics.
+
+### Important distinction
+
+The **14-day attribution window** and **90-day observation period** serve different purposes.
+
+The attribution window determines whether a marketing touchpoint can receive credit for a purchase.
+
+The observation period determines how long downstream customer behavior can be observed after the experiment.
+
+---
+
+## 13. Support for Downstream Analysis
+
+The architecture was checked against the later analytical requirements.
+
+| Analytical Need         | Primary Data                                                       |
+| ----------------------- | ------------------------------------------------------------------ |
+| Marketing performance   | `marketing_performance`                                            |
+| Incrementality          | `marketing_performance` + `experiment_assignment` + `transactions` |
+| Multi-touch attribution | `marketing_touchpoints` + `transactions`                           |
+| Customer economics      | `customers` + `transactions`                                       |
+| Channel response        | Marketing activity + business outcomes                             |
+| Marginal economics      | Channel response + experiment evidence                             |
+| Budget optimization     | Marginal economics + response curves + business constraints        |
+
+The architecture is designed to support the full analytical path without adding unnecessary source tables.
+
+---
+
+## 14. Data Generation Principle
+
+A key design decision was to generate the synthetic data as **one coherent business process**.
+
+The intended dependency structure is:
+
+```text
+Areas
+  ↓
+Customers
+  ↓
+Marketing Activity / Interactions
+  ↓
+Transactions
+```
+
+with the experiment affecting marketing investment:
+
+```text
+Areas
+  ↓
+Experiment Assignment
+  ↓
+Marketing Spend
+  ↓
+Customer Behavior
+  ↓
+Transactions
+```
+
+The objective is to avoid generating independent random CSV files that do not represent the same underlying business.
+
+---
+
+## 15. What Was Actually Completed
+
+Day 2 was completed as a **data architecture milestone**.
+
+The following were defined and locked:
+
+* OTA / hotel-booking business context
+* Six source tables
+* Source-table grains
+* Primary and join keys
+* Raw versus derived data boundaries
+* Campaign-name-based area extraction
+* Customer-level click-only touchpoints
+* Multi-touch attribution as the primary methodology
+* Last-touch as a comparison baseline
+* 14-day primary attribution window
+* 18-month historical period
+* 28-day experiment period
+* 90-day post-experiment observation period
+* Transaction-level subsidy and discount structure
+* Contribution-margin calculation
+* Source-table relationships
+* Architecture required for downstream customer economics
+* Architecture required for channel response and budget optimization
+* One coherent data-generation approach
+
+---
+
+## 16. Not Completed
+
+The following were discussed or planned but were **not completed during Day 2**:
+
+* Synthetic data generation
+* Python data-generation implementation
+* SQL transformations
+* Attribution implementation
+* Data-quality injection
+* Data validation
+* Funnel reconstruction
+* Experiment estimation
+* Customer economics
+* LTV analysis
+* Channel response curves
+* Marginal-return analysis
+* Budget optimization
+* Scenario analysis
+* Final $2M allocation
+* Executive recommendation
+
+---
+
+## 17. Open Questions
+
+The following remain open for implementation:
+
+* Exact historical dates
+* Exact experiment dates
+* Exact area identifiers and names
+* Exact stratification variables
+* Exact implementation of the 25% treatment increase at campaign level
+* Exact customer-generation parameters
+* Exact purchase-behavior rules
+* Exact data-quality issues and rates
+* Exact multi-touch attribution weighting logic
+* Exact channel response-curve structure
+* Exact customer economics and cohort rules
+* Exact operational constraints for the $2M optimization
+* How aggregate experiment evidence will be connected to channel-level marginal economics
+
+These are implementation and modeling questions, not completed analytical results.
+
+---
+
+## Day 2 Conclusion
+
+Day 2 established and locked the project's source-data architecture.
+
+The project now has defined source tables, row grains, keys, relationships, raw versus derived fields, customer touchpoint rules, attribution-window logic, and the overall timeline needed to support the later causal and economic analysis.
+
+The important boundary is that **Day 2 produced the data blueprint, not the data or analytical results**.
+
+The synthetic business has not yet been generated.
