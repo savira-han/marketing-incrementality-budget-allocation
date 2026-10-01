@@ -193,3 +193,49 @@ This provides a validation layer for:
 * Channel response curves
 
 Estimated results are not expected to exactly match simulation truth because the synthetic business contains randomness, heterogeneity, and realistic variation.
+
+## 11 - Synthetic Data Quality and Integration Standard
+
+The synthetic dataset is designed as one integrated business system rather than a collection of independently generated tables.
+
+Each table has a defined grain, primary key, foreign-key relationships, business purpose, and analytical role. Generation logic follows these dependencies so that customer behavior, marketing activity, transactions, revenue, and contribution margin remain connected throughout the dataset.
+
+Before the dataset is considered analysis-ready, it must pass five validation layers:
+
+1. **Structural integrity**
+
+   * Required tables and columns exist
+   * Primary keys are unique
+   * Required fields are populated
+   * Data types and value ranges are valid
+
+2. **Referential integrity**
+
+   * Foreign keys resolve to valid parent records
+   * Customers, areas, campaigns, marketing touches, and transactions can be connected across tables
+   * No orphan records exist
+
+3. **Business consistency**
+
+   * Marketing metrics reconcile with their underlying components
+   * Revenue and contribution margin calculations reconcile
+   * Customer and transaction relationships follow the defined business rules
+   * Dates remain within the intended observation windows
+
+4. **Experiment integrity**
+
+   * Treatment and control assignments follow the experiment design
+   * Areas are assigned consistently
+   * Pre-period and experiment-period observations are available
+   * Outcome data is connected to the assigned experiment units without unintended leakage
+
+5. **Behavioral and analytical validity**
+
+   * Generated distributions and relationships are commercially plausible
+   * Customer acquisition, repeat behavior, revenue, and contribution margin exhibit intentional relationships
+   * Marketing exposure and customer outcomes are generated from coherent behavioral mechanisms
+   * Hidden simulation truth is consistent with the mechanisms used to generate the observed data
+
+The final dataset is considered analysis-ready only when all validation layers pass.
+
+The objective is not to make the synthetic data look realistic in isolation. The objective is to create a coherent synthetic business in which the relationships between marketing activity, customer behavior, financial outcomes, experimentation, and incrementality are sufficiently consistent to support the project's downstream analytical methods.
