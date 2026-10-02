@@ -21,6 +21,7 @@ build/
 
 # IDE
 .vscode/
+.vscode
 
 # Data generated locally
 data/raw/*
