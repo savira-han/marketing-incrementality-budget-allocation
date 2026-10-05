@@ -904,3 +904,329 @@ The project now has defined source tables, row grains, keys, relationships, raw 
 The important boundary is that **Day 2 produced the data blueprint, not the data or analytical results**.
 
 The synthetic business has not yet been generated.
+
+# Day 3 - Customer Lifecycle
+
+**Status:** In Progress
+**Focus:** Build and validate a coherent customer acquisition and purchase lifecycle across the historical, experiment, and post-experiment periods.
+
+---
+
+## Objective
+
+Implement the first major component of the synthetic business simulator: a persistent customer lifecycle connecting customer entry, marketing exposure, first purchase, repeat purchase, and customer-level behavioral characteristics.
+
+The objective was to ensure that customers and transactions are generated from the same underlying business process rather than as independent random datasets.
+
+---
+
+## 1. Customer Generation Dependency
+
+### Change
+
+Customer generation was moved to occur after marketing performance generation and validation.
+
+The customer-generation process now receives both:
+
+* `area_characteristics`
+* `marketing_performance`
+
+Customer entry dates were extended across the full simulation period:
+
+```text
+2025-01-01 → 2026-10-26
+```
+
+### Why
+
+The original customer-generation structure relied primarily on fixed customer-volume targets and area weights.
+
+This did not adequately represent customer acquisition as a response to the underlying business and marketing environment.
+
+The revised dependency is:
+
+```text
+Area characteristics
+        +
+Marketing activity
+        ↓
+Customer acquisition
+        ↓
+Customer population
+```
+
+This also allows new customers to enter during the experiment and post-experiment periods.
+
+---
+
+## 2. Marketing-Responsive Customer Acquisition
+
+### Change
+
+Customer acquisition was redesigned around area-day marketing activity.
+
+Marketing performance is aggregated to area and date, with clicks used as a measure of marketing pressure.
+
+Customer acquisition combines:
+
+* baseline area demand
+* customer volume potential
+* marketing responsiveness
+* daily marketing activity
+* diminishing marketing response
+* Poisson sampling
+
+### Why
+
+Customer acquisition should respond to the marketing environment while retaining natural stochastic variation.
+
+The diminishing-response function prevents customer acquisition from increasing linearly without limit as marketing activity increases.
+
+The Poisson process introduces realistic variation around expected customer acquisition.
+
+---
+
+## 3. Customer-Level Persistent Characteristics
+
+### Change
+
+Persistent hidden customer characteristics were retained and connected to downstream behavior:
+
+* `purchase_propensity`
+* `aov_tendency`
+* `repeat_purchase_tendency`
+* `price_sensitivity`
+* Google responsiveness
+* Meta responsiveness
+* TikTok responsiveness
+* CRM responsiveness
+
+These characteristics remain simulation state and are not exposed in the analyst-facing `customers` source table.
+
+### Why
+
+Customers should exhibit heterogeneous behavior rather than behaving identically.
+
+Persistent characteristics allow the same customer to maintain behavioral tendencies across marketing exposure, purchasing, repeat behavior, and later customer economics.
+
+---
+
+## 4. Customer Lifecycle Redesign
+
+### Change
+
+The transaction-generation process was redesigned from continuous daily purchase eligibility to a state-based lifecycle.
+
+The previous mechanism allowed an active customer to attempt a purchase every day after entry.
+
+The revised lifecycle introduces an explicit `next_purchase_date` state.
+
+The resulting structure is:
+
+```text
+Customer entry
+      ↓
+First purchase opportunity
+      ↓
+Completed purchase
+      ↓
+Repeat waiting period
+      ↓
+Next purchase opportunity
+      ↓
+Repeat purchase
+      ↓
+Potential additional repeat purchase
+```
+
+### Why
+
+The previous implementation did not represent realistic repeat-purchase timing.
+
+A customer could repeatedly attempt to purchase immediately after a previous purchase, making repeat behavior resemble repeated independent purchase trials.
+
+The revised state-based approach creates a meaningful interval between completed purchases and allows `repeat_purchase_tendency` to influence customer return timing.
+
+---
+
+## 5. Repeat Purchase Behavior
+
+### Change
+
+Repeat purchase timing is now influenced by customer-level `repeat_purchase_tendency`.
+
+Customers with stronger repeat tendencies receive shorter expected return intervals, while stochastic variation is retained.
+
+A minimum waiting period is enforced between completed purchases.
+
+### Why
+
+`repeat_purchase_tendency` should affect observable customer behavior rather than function only as a probability multiplier.
+
+The revised mechanism creates a direct relationship between:
+
+```text
+Customer characteristic
+        ↓
+Return timing
+        ↓
+Repeat purchase behavior
+```
+
+---
+
+## 6. Cancellation and Customer State
+
+### Change
+
+Cancelled transactions remain in the `transactions` table but do not advance the completed-purchase lifecycle.
+
+Completed purchases update:
+
+* purchase count
+* last purchase date
+* next purchase date
+
+Cancelled transactions create another purchase opportunity after a short interval.
+
+### Why
+
+A cancelled transaction represents a transaction event but not a completed customer purchase.
+
+Separating transaction events from completed purchases is required for later analysis of:
+
+* cancellation rate
+* realized revenue
+* subsidy
+* discount
+* contribution margin
+* customer value
+
+---
+
+## 7. Customer Lifecycle Validation
+
+The revised lifecycle was validated using the generated synthetic data.
+
+| Metric                       |   Result |
+| ---------------------------- | -------: |
+| Customers                    |  121,637 |
+| Transactions                 |   51,619 |
+| Customers with 0 purchases   |   82,376 |
+| Customers with 1 purchase    |   30,379 |
+| Customers with 2 purchases   |    7,353 |
+| Customers with 3+ purchases  |    1,529 |
+| Cancelled transactions       |    1,756 |
+| Cancellation rate            |    3.40% |
+| First purchases              |   39,261 |
+| Repeat purchases             |   10,602 |
+| Minimum purchase gap         |  19 days |
+| Median purchase gap          | 191 days |
+| 75th percentile purchase gap | 275 days |
+| Maximum purchase gap         | 652 days |
+
+The resulting population contains non-purchasers, first-time purchasers, repeat purchasers, and frequent purchasers.
+
+---
+
+## 8. Repeat Behavior Validation
+
+Customer behavior was compared across quintiles of `repeat_purchase_tendency`.
+
+| Repeat Tendency | Average Purchases | Repeat Customer Rate |
+| --------------- | ----------------: | -------------------: |
+| Lowest 20%      |             0.407 |                6.82% |
+| 20-40%          |             0.405 |                7.08% |
+| 40-60%          |             0.405 |                7.01% |
+| 60-80%          |             0.412 |                7.51% |
+| Highest 20%     |             0.422 |                8.09% |
+
+Higher repeat tendency produces a higher repeat-customer rate.
+
+The relationship is not perfectly monotonic because repeat behavior is also affected by marketing exposure, purchase propensity, seasonality, area characteristics, and customer observation time.
+
+---
+
+## 9. Repeat Timing Validation
+
+Repeat purchase timing was compared across quintiles of `repeat_purchase_tendency`.
+
+| Repeat Tendency | Median Gap | Average Gap |
+| --------------- | ---------: | ----------: |
+| Lowest 20%      | 173.0 days |  182.1 days |
+| 20-40%          | 160.5 days |  175.9 days |
+| 40-60%          | 165.0 days |  178.1 days |
+| 60-80%          | 153.5 days |  175.1 days |
+| Highest 20%     | 151.5 days |  165.4 days |
+
+Higher repeat tendency is associated with shorter repeat-purchase intervals.
+
+This confirms that the hidden customer characteristic influences observable repeat-purchase timing as intended.
+
+---
+
+## 10. Customer State Consistency
+
+The final lifecycle consistency checks produced:
+
+| Validation                             |  Result |
+| -------------------------------------- | ------: |
+| Transactions with valid customer IDs   |  51,619 |
+| Transactions before customer entry     |       0 |
+| Transactions outside simulation period |       0 |
+| Completed first purchases              |  39,261 |
+| Completed repeat purchases             |  10,602 |
+| Customers with completed purchases     |  39,261 |
+| Invalid purchase ordering              |       0 |
+| Minimum completed-purchase gap         | 19 days |
+
+All customer lifecycle consistency checks passed.
+
+---
+
+## 11. Day 3 Decisions
+
+The following decisions were finalized during this stage:
+
+* Customer acquisition is responsive to the marketing environment.
+* Customer entry spans the full simulation period.
+* Customer-level behavioral characteristics remain persistent hidden simulation state.
+* Customer lifecycle is state-based rather than continuously purchase-eligible.
+* Repeat purchases require a waiting period.
+* Repeat tendency influences repeat-purchase timing.
+* Cancelled transactions do not advance completed-purchase state.
+* Treatment spend remains isolated to the defined experiment period.
+* Treatment and control customer counts are not forced to be identical.
+* Customer lifecycle validation is based on structural consistency and behavioral relationships rather than fixed target counts.
+
+---
+
+## 12. Day 3 Conclusion
+
+The customer lifecycle has been implemented and validated as a coherent component of the synthetic business simulator.
+
+The current lifecycle is considered sufficiently robust for downstream development and is locked for the current simulation stage.
+
+The validated dependency is:
+
+```text
+Area characteristics
+        ↓
+Customer entry
+        ↓
+Persistent customer behavior
+        ↓
+Marketing exposure
+        ↓
+First purchase
+        ↓
+Repeat waiting period
+        ↓
+Repeat purchase
+        ↓
+Customer value
+```
+
+Further lifecycle tuning is not required at this stage.
+
+The next stage will extend the validated customer lifecycle into **customer economics**, including AOV, revenue, subsidy, discount, cancellation economics, contribution margin, and customer value.

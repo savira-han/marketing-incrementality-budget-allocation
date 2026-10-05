@@ -243,114 +243,6 @@ def generate_areas():
 
     return areas, area_characteristics
 
-def generate_customers(area_characteristics):
-    """Generate customers and their hidden behavioral characteristics."""
-
-    area_ids = area_characteristics["area_id"].to_numpy()
-
-    area_weights = (
-        area_characteristics["customer_volume_potential"]
-        * area_characteristics["baseline_demand"]
-    )
-
-    area_weights = area_weights / area_weights.sum()
-
-    target_customers = RANDOM_GENERATOR.integers(
-        TARGET_MIN_CUSTOMERS,
-        TARGET_MAX_CUSTOMERS + 1,
-    )
-
-    customer_area_indices = RANDOM_GENERATOR.choice(
-        len(area_ids),
-        size=target_customers,
-        p=area_weights,
-    )
-
-    customer_ids = [
-        f"CUST_{i:06d}"
-        for i in range(1, target_customers + 1)
-    ]
-
-    customers = pd.DataFrame(
-        {
-            "customer_id": customer_ids,
-            "area_id": area_ids[customer_area_indices],
-        }
-    )
-
-    entry_days = (
-        HISTORICAL_END - HISTORICAL_START
-    ).days
-
-    entry_offsets = RANDOM_GENERATOR.integers(
-        0,
-        entry_days + 1,
-        size=target_customers,
-    )
-
-    entry_dates = HISTORICAL_START + pd.to_timedelta(
-        entry_offsets,
-        unit="D",
-    )
-
-    hidden_customer_characteristics = pd.DataFrame(
-        {
-            "customer_id": customer_ids,
-            "entry_date": entry_dates,
-            "purchase_propensity": RANDOM_GENERATOR.beta(
-                a=2.5,
-                b=35,
-                size=target_customers,
-            ),
-            "aov_tendency": RANDOM_GENERATOR.lognormal(
-                mean=np.log(1_000_000),
-                sigma=0.35,
-                size=target_customers,
-            ),
-            "repeat_purchase_tendency": RANDOM_GENERATOR.beta(
-                a=2,
-                b=5,
-                size=target_customers,
-            ),
-            "price_sensitivity": RANDOM_GENERATOR.beta(
-                a=2.5,
-                b=4,
-                size=target_customers,
-            ),
-        }
-    )
-
-    channel_responsiveness = pd.DataFrame(
-        {
-            "customer_id": customer_ids,
-            "Google": RANDOM_GENERATOR.lognormal(
-                mean=0.0,
-                sigma=0.30,
-                size=target_customers,
-            ),
-            "Meta": RANDOM_GENERATOR.lognormal(
-                mean=0.0,
-                sigma=0.30,
-                size=target_customers,
-            ),
-            "TikTok": RANDOM_GENERATOR.lognormal(
-                mean=0.0,
-                sigma=0.30,
-                size=target_customers,
-            ),
-            "CRM": RANDOM_GENERATOR.lognormal(
-                mean=0.0,
-                sigma=0.30,
-                size=target_customers,
-            ),
-        }
-    )
-
-    return (
-        customers,
-        hidden_customer_characteristics,
-        channel_responsiveness,
-    )
 
 def generate_campaign_configuration(area_characteristics):
     """Create campaign metadata used by the marketing simulator."""
@@ -441,7 +333,7 @@ def generate_festival_campaign_configuration(area_characteristics):
     return pd.DataFrame(campaign_records)
 
 def generate_experiment_assignment(area_characteristics):
-    """Randomly assign areas to treatment/control within strata."""
+    """Randomly assign areas to treatment/control with balanced baseline potential."""
 
     assignment_date = EXPERIMENT_START
 
@@ -450,78 +342,108 @@ def generate_experiment_assignment(area_characteristics):
             "area_id",
             "baseline_demand",
             "customer_volume_potential",
-            "purchase_propensity",
+            "marketing_responsiveness",
         ]
     ].copy()
 
-    # Standardize pre-experiment characteristics.
-    for column in [
-        "baseline_demand",
-        "customer_volume_potential",
-        "purchase_propensity",
-    ]:
-        mean = assignment_base[column].mean()
-        std = assignment_base[column].std()
-
-        assignment_base[f"{column}_z"] = (
-            assignment_base[column] - mean
-        ) / std
-
-    # Composite pre-experiment score used only for stratification.
-    assignment_base["stratification_score"] = (
-        assignment_base["baseline_demand_z"]
-        + assignment_base["customer_volume_potential_z"]
-        + assignment_base["purchase_propensity_z"]
-    ) / 3
-
-    # Five strata with four areas each.
-    assignment_base["stratum"] = pd.qcut(
-        assignment_base["stratification_score"],
-        q=5,
-        labels=False,
+    # Calculate the baseline acquisition potential that
+    # drives customer entry before experiment treatment.
+    assignment_base["baseline_acquisition_potential"] = (
+        assignment_base["baseline_demand"]
+        * assignment_base["customer_volume_potential"]
+        * assignment_base["marketing_responsiveness"]
     )
+
+    area_ids = assignment_base["area_id"].to_numpy()
+
+    potential_lookup = (
+        assignment_base
+        .set_index("area_id")[
+            "baseline_acquisition_potential"
+        ]
+    )
+
+    total_potential = (
+        assignment_base["baseline_acquisition_potential"].sum()
+    )
+
+    best_treatment_ids = None
+    best_difference = np.inf
+
+    # Search many randomized 10-treatment / 10-control
+    # assignments and retain the most balanced one.
+    for _ in range(10_000):
+
+        shuffled_area_ids = area_ids.copy()
+
+        RANDOM_GENERATOR.shuffle(
+            shuffled_area_ids
+        )
+
+        treatment_ids = shuffled_area_ids[:10]
+
+        control_ids = shuffled_area_ids[10:]
+
+        treatment_potential = (
+            potential_lookup.loc[treatment_ids].sum()
+        )
+
+        control_potential = (
+            potential_lookup.loc[control_ids].sum()
+        )
+
+        difference = abs(
+            treatment_potential
+            - control_potential
+        )
+
+        if difference < best_difference:
+            best_difference = difference
+            best_treatment_ids = treatment_ids.copy()
+
+    treatment_ids = set(best_treatment_ids)
 
     assignment_records = []
 
-    for stratum, stratum_data in assignment_base.groupby("stratum"):
+    for area_id in area_ids:
 
-        area_ids = stratum_data["area_id"].tolist()
+        if area_id in treatment_ids:
+            experiment_group = "treatment"
+        else:
+            experiment_group = "control"
 
-        RANDOM_GENERATOR.shuffle(area_ids)
-
-        for index, area_id in enumerate(area_ids):
-
-            if index < len(area_ids) / 2:
-                experiment_group = "treatment"
-            else:
-                experiment_group = "control"
-
-            assignment_records.append(
-                {
-                    "experiment_id": "EXP_001",
-                    "area_id": area_id,
-                    "experiment_group": experiment_group,
-                    "assignment_date": assignment_date,
-                }
-            )
-
-    assignment_df = pd.DataFrame(assignment_records)
-
-    # Validate stratified assignment before returning the raw experiment table.
-    stratum_group_counts = (
-        assignment_base
-        .merge(
-            assignment_df,
-            on="area_id",
-            how="left",
+        assignment_records.append(
+            {
+                "experiment_id": "EXP_001",
+                "area_id": area_id,
+                "experiment_group": experiment_group,
+                "assignment_date": assignment_date,
+            }
         )
-        .groupby(["stratum", "experiment_group"])
-        .size()
-        .unstack(fill_value=0)
+
+    assignment_df = pd.DataFrame(
+        assignment_records
     )
 
-    assert (stratum_group_counts["treatment"] == 2).all()
-    assert (stratum_group_counts["control"] == 2).all()
+    # Validate exactly 10 areas per group.
+    group_counts = (
+        assignment_df["experiment_group"]
+        .value_counts()
+    )
+
+    assert group_counts["treatment"] == 10
+    assert group_counts["control"] == 10
+
+    # Validate that all areas received exactly one assignment.
+    assert (
+        assignment_df["area_id"].nunique()
+        == len(area_characteristics)
+    )
+
+    assert (
+        assignment_df["area_id"].duplicated().sum()
+        == 0
+    )
 
     return assignment_df
 
@@ -1032,6 +954,164 @@ def validate_marketing_performance(
 
     print("\nMarketing performance validation passed.")
 
+def generate_customers(area_characteristics, marketing_performance):
+    """Generate customers and their hidden behavioral characteristics."""
+
+    marketing = marketing_performance.copy()
+
+    marketing["date"] = pd.to_datetime(
+        marketing["date"]
+    )
+
+    marketing["area_id"] = marketing["campaign_name"].str.extract(
+        r"(AREA_\d{3})"
+    )
+
+    area_day_marketing = (
+        marketing
+        .groupby(["date", "area_id"], as_index=False)
+        .agg(
+            clicks=("clicks", "sum"),
+            spend=("spend", "sum"),
+        )
+    )
+
+    area_day_marketing = area_day_marketing.merge(
+        area_characteristics[
+            [
+                "area_id",
+                "baseline_demand",
+                "customer_volume_potential",
+                "marketing_responsiveness",
+            ]
+        ],
+        on="area_id",
+        how="left",
+    )
+
+    # Baseline daily customer acquisition rate.
+    # This represents underlying customer demand before
+    # marketing response is applied.
+    area_day_marketing["baseline_acquisition_rate"] = (
+        area_day_marketing["baseline_demand"]
+        * area_day_marketing["customer_volume_potential"]
+        * 4.5
+    )
+
+    # Marketing increases customer acquisition with
+    # diminishing returns as clicks increase.
+    area_day_marketing["marketing_response"] = (
+        1
+        + 0.08
+        * np.log1p(
+            area_day_marketing["clicks"]
+        )
+        * area_day_marketing["marketing_responsiveness"]
+    )
+
+    # Expected customer entries for each area-day.
+    area_day_marketing["expected_customers"] = (
+        area_day_marketing["baseline_acquisition_rate"]
+        * area_day_marketing["marketing_response"]
+    )
+
+    # Realized customer entries follow a Poisson process.
+    area_day_marketing["new_customers"] = (
+        RANDOM_GENERATOR.poisson(
+            area_day_marketing["expected_customers"]
+        )
+    )
+
+    customer_area_ids = []
+    customer_entry_dates = []
+
+    for row in area_day_marketing.itertuples(index=False):
+        if row.new_customers > 0:
+            customer_area_ids.extend(
+                [row.area_id] * row.new_customers
+            )
+            customer_entry_dates.extend(
+                [row.date] * row.new_customers
+            )
+
+    customer_count = len(customer_area_ids)
+
+    customer_ids = [
+        f"CUST_{i:06d}"
+        for i in range(1, customer_count + 1)
+    ]
+
+    customers = pd.DataFrame(
+        {
+            "customer_id": customer_ids,
+            "area_id": customer_area_ids,
+        }
+    )
+
+    entry_dates = pd.Series(
+        customer_entry_dates,
+        dtype="datetime64[ns]",
+    )
+
+    hidden_customer_characteristics = pd.DataFrame(
+        {
+            "customer_id": customer_ids,
+            "entry_date": entry_dates,
+            "purchase_propensity": RANDOM_GENERATOR.beta(
+                a=2.5,
+                b=35,
+                size=customer_count,
+            ),
+            "aov_tendency": RANDOM_GENERATOR.lognormal(
+                mean=np.log(1_000_000),
+                sigma=0.35,
+                size=customer_count,
+            ),
+            "repeat_purchase_tendency": RANDOM_GENERATOR.beta(
+                a=2,
+                b=5,
+                size=customer_count,
+            ),
+            "price_sensitivity": RANDOM_GENERATOR.beta(
+                a=2.5,
+                b=4,
+                size=customer_count,
+            ),
+        }
+    )
+
+    channel_responsiveness = pd.DataFrame(
+        {
+            "customer_id": customer_ids,
+            "Google": RANDOM_GENERATOR.lognormal(
+                mean=0.0,
+                sigma=0.30,
+                size=customer_count,
+            ),
+            "Meta": RANDOM_GENERATOR.lognormal(
+                mean=0.0,
+                sigma=0.30,
+                size=customer_count,
+            ),
+            "TikTok": RANDOM_GENERATOR.lognormal(
+                mean=0.0,
+                sigma=0.30,
+                size=customer_count,
+            ),
+            "CRM": RANDOM_GENERATOR.lognormal(
+                mean=0.0,
+                sigma=0.30,
+                size=customer_count,
+            ),
+        }
+    )
+
+    return (
+        customers,
+        hidden_customer_characteristics,
+        channel_responsiveness,
+    )
+
 def generate_transactions(
     customers,
     hidden_customer_characteristics,
@@ -1112,13 +1192,6 @@ def generate_transactions(
         area_characteristics
         .set_index("area_id")
         .to_dict("index")
-    )
-
-    customer_area_baseline_demand = np.array(
-        [
-            area_lookup[area_id]["baseline_demand"]
-            for area_id in customer_area_ids
-        ]
     )
 
     customer_area_purchase_propensity = np.array(
@@ -1205,9 +1278,6 @@ def generate_transactions(
 
     assert daily_area_clicks["customer_count"].notna().all()
 
-    # Marketing pressure is expressed as clicks per customer
-    # in each area. This allows areas with different customer
-    # populations to be compared.
     for channel in ELIGIBLE_CHANNELS:
         daily_area_clicks[f"{channel}_pressure"] = (
             daily_area_clicks[channel]
@@ -1218,16 +1288,22 @@ def generate_transactions(
     # Simulation state
     # --------------------------------------------------------
 
+    # Number of completed purchases for each customer.
     purchase_count = np.zeros(
         len(customer_data),
         dtype=np.int16,
     )
 
+    # Date of the most recent completed purchase.
     last_purchase_date = np.full(
         len(customer_data),
-        np.datetime64("NaT","ns"),
+        np.datetime64("NaT", "ns"),
         dtype="datetime64[ns]",
     )
+
+    # Earliest date when a customer can attempt another
+    # purchase after completing a previous purchase.
+    next_purchase_date = customer_entry_dates.copy()
 
     transaction_records = []
 
@@ -1243,6 +1319,24 @@ def generate_transactions(
         freq="D",
     )
 
+    # Purchase probability is calibrated around a low daily
+    # probability because customers have many opportunities
+    # across the observation period.
+    month_multipliers = {
+        1: 0.95,
+        2: 0.90,
+        3: 1.00,
+        4: 0.98,
+        5: 1.02,
+        6: 1.00,
+        7: 1.05,
+        8: 1.00,
+        9: 1.05,
+        10: 1.20,
+        11: 1.05,
+        12: 1.10,
+    }
+
     for simulation_date in all_dates:
 
         simulation_date_np = np.datetime64(
@@ -1250,14 +1344,30 @@ def generate_transactions(
             "ns",
         )
 
+        # ----------------------------------------------------
+        # Customer lifecycle eligibility
+        # ----------------------------------------------------
+
         active_mask = (
             customer_entry_dates
             <= simulation_date_np
         )
 
-        active_indices = np.flatnonzero(active_mask)
+        purchase_opportunity_mask = (
+            next_purchase_date
+            <= simulation_date_np
+        )
 
-        if len(active_indices) == 0:
+        eligible_mask = (
+            active_mask
+            & purchase_opportunity_mask
+        )
+
+        eligible_indices = np.flatnonzero(
+            eligible_mask
+        )
+
+        if len(eligible_indices) == 0:
             continue
 
         # ----------------------------------------------------
@@ -1274,14 +1384,16 @@ def generate_transactions(
             .to_dict("index")
         )
 
+        customer_eligible_area_ids = (
+            customer_area_ids[eligible_indices]
+        )
+
         google_pressure = np.array(
             [
                 daily_marketing_lookup[area_id][
                     "Google_pressure"
                 ]
-                for area_id in customer_area_ids[
-                    active_indices
-                ]
+                for area_id in customer_eligible_area_ids
             ]
         )
 
@@ -1290,9 +1402,7 @@ def generate_transactions(
                 daily_marketing_lookup[area_id][
                     "Meta_pressure"
                 ]
-                for area_id in customer_area_ids[
-                    active_indices
-                ]
+                for area_id in customer_eligible_area_ids
             ]
         )
 
@@ -1301,9 +1411,7 @@ def generate_transactions(
                 daily_marketing_lookup[area_id][
                     "TikTok_pressure"
                 ]
-                for area_id in customer_area_ids[
-                    active_indices
-                ]
+                for area_id in customer_eligible_area_ids
             ]
         )
 
@@ -1312,9 +1420,7 @@ def generate_transactions(
                 daily_marketing_lookup[area_id][
                     "CRM_pressure"
                 ]
-                for area_id in customer_area_ids[
-                    active_indices
-                ]
+                for area_id in customer_eligible_area_ids
             ]
         )
 
@@ -1325,24 +1431,24 @@ def generate_transactions(
         marketing_response = (
             google_pressure
             * customer_google_response[
-                active_indices
+                eligible_indices
             ]
             + meta_pressure
             * customer_meta_response[
-                active_indices
+                eligible_indices
             ]
             + tiktok_pressure
             * customer_tiktok_response[
-                active_indices
+                eligible_indices
             ]
             + crm_pressure
             * customer_crm_response[
-                active_indices
+                eligible_indices
             ]
         )
 
-        # Log transformation creates diminishing returns from
-        # increasingly high marketing pressure.
+        # Diminishing returns from increasingly high
+        # marketing pressure.
         marketing_effect = (
             1.0
             + 0.18
@@ -1350,7 +1456,7 @@ def generate_transactions(
                 marketing_response / 0.03
             )
             * customer_area_marketing_response[
-                active_indices
+                eligible_indices
             ]
         )
 
@@ -1358,43 +1464,30 @@ def generate_transactions(
         # Seasonality
         # ----------------------------------------------------
 
-        month_multipliers = {
-            1: 0.95,
-            2: 0.90,
-            3: 1.00,
-            4: 0.98,
-            5: 1.02,
-            6: 1.00,
-            7: 1.05,
-            8: 1.00,
-            9: 1.05,
-            10: 1.20,
-            11: 1.05,
-            12: 1.10,
-        }
-
         seasonality = (
             month_multipliers[simulation_date.month]
             ** customer_area_seasonality[
-                active_indices
+                eligible_indices
             ]
         )
 
         # ----------------------------------------------------
-        # Repeat purchase behavior
+        # First purchase vs repeat purchase behavior
         # ----------------------------------------------------
 
         previous_purchase = (
-            purchase_count[active_indices] > 0
+            purchase_count[eligible_indices] > 0
         )
 
         repeat_multiplier = np.where(
             previous_purchase,
-            1.0
-            + 0.35
-            * customer_repeat_tendency[
-                active_indices
-            ],
+            (
+                1.0
+                + 0.35
+                * customer_repeat_tendency[
+                    eligible_indices
+                ]
+            ),
             1.0,
         )
 
@@ -1415,7 +1508,7 @@ def generate_transactions(
         base_probability = (
             0.00075
             * customer_purchase_propensity[
-                active_indices
+                eligible_indices
             ]
             / customer_purchase_propensity.mean()
         )
@@ -1423,7 +1516,7 @@ def generate_transactions(
         purchase_probability = (
             base_probability
             * customer_area_purchase_propensity[
-                active_indices
+                eligible_indices
             ]
             / customer_area_purchase_propensity.mean()
             * seasonality
@@ -1432,7 +1525,6 @@ def generate_transactions(
             * festival_multiplier
         )
 
-        # Keep the probability in a realistic range.
         purchase_probability = np.clip(
             purchase_probability,
             0.0,
@@ -1441,12 +1533,12 @@ def generate_transactions(
 
         purchase_events = (
             RANDOM_GENERATOR.random(
-                len(active_indices)
+                len(eligible_indices)
             )
             < purchase_probability
         )
 
-        purchase_indices = active_indices[
+        purchase_indices = eligible_indices[
             purchase_events
         ]
 
@@ -1472,8 +1564,10 @@ def generate_transactions(
             )
         )
 
-        # Festival promotions create stronger discounting.
+        # Festival promotions create stronger discounting
+        # and subsidy.
         if simulation_date.month == 10:
+
             discount_rate = (
                 RANDOM_GENERATOR.beta(
                     a=2.5,
@@ -1491,7 +1585,9 @@ def generate_transactions(
                 )
                 + 0.035
             )
+
         else:
+
             discount_rate = (
                 RANDOM_GENERATOR.beta(
                     a=2.0,
@@ -1548,7 +1644,10 @@ def generate_transactions(
             * subsidy_rate
         )
 
-        # A small proportion of purchases are cancelled.
+        # ----------------------------------------------------
+        # Cancellation
+        # ----------------------------------------------------
+
         cancelled = (
             RANDOM_GENERATOR.random(
                 len(purchase_indices)
@@ -1562,8 +1661,6 @@ def generate_transactions(
             )
         )
 
-        # Cancelled transactions have no realized revenue or
-        # variable promotional cost.
         revenue = np.where(
             cancelled,
             0.0,
@@ -1583,7 +1680,7 @@ def generate_transactions(
         )
 
         # ----------------------------------------------------
-        # Store transaction records
+        # Store transaction records and update lifecycle
         # ----------------------------------------------------
 
         for index, customer_index in enumerate(
@@ -1614,11 +1711,66 @@ def generate_transactions(
                 }
             )
 
-            purchase_count[customer_index] += 1
+            # A completed purchase changes the customer's
+            # lifecycle state.
+            if not cancelled[index]:
 
-            last_purchase_date[customer_index] = (
-                simulation_date_np
-            )
+                purchase_count[customer_index] += 1
+
+                last_purchase_date[
+                    customer_index
+                ] = simulation_date_np
+
+                # Customers with stronger repeat tendency
+                # generally return sooner, while retaining
+                # substantial natural variation.
+                repeat_tendency = (
+                    customer_repeat_tendency[
+                        customer_index
+                    ]
+                )
+
+                mean_repeat_gap = (
+                    120
+                    - 60 * repeat_tendency
+                )
+
+                repeat_gap = max(
+                    14,
+                    int(
+                        RANDOM_GENERATOR.gamma(
+                            shape=4.0,
+                            scale=(
+                                mean_repeat_gap / 4.0
+                            ),
+                        )
+                    ),
+                )
+
+                next_purchase_date[
+                    customer_index
+                ] = (
+                    simulation_date_np
+                    + np.timedelta64(
+                        repeat_gap,
+                        "D",
+                    )
+                )
+
+            else:
+
+                # A cancelled booking does not create a
+                # completed-purchase state. Give the customer
+                # another opportunity after a short interval.
+                next_purchase_date[
+                    customer_index
+                ] = (
+                    simulation_date_np
+                    + np.timedelta64(
+                        7,
+                        "D",
+                    )
+                )
 
             transaction_number += 1
 
@@ -1762,14 +1914,14 @@ def generate_marketing_touchpoints(
 
     return marketing_touchpoints
 
-if __name__ == "__main__":
-    areas, area_characteristics = generate_areas()
 
-    (
-        customers,
-        hidden_customer_characteristics,
-        channel_responsiveness,
-    ) = generate_customers(area_characteristics)
+if __name__ == "__main__":
+
+    # ---------------------------------------------------------
+    # 1. Generate source data and simulation state
+    # ---------------------------------------------------------
+
+    areas, area_characteristics = generate_areas()
 
     campaign_configuration = generate_campaign_configuration(
         area_characteristics
@@ -1785,69 +1937,6 @@ if __name__ == "__main__":
         area_characteristics
     )
 
-    print("\nExperiment assignment:")
-    print(experiment_assignment.sort_values("area_id"))
-
-    print("\nExperiment group counts:")
-    print(
-        experiment_assignment["experiment_group"]
-        .value_counts()
-    )
-
-    print("\nAssignment by experiment group:")
-    print(
-        experiment_assignment
-        .sort_values(["experiment_group", "area_id"])
-        .to_string(index=False)
-    )
-
-    print("\nCampaign configuration:")
-    print(campaign_configuration.head(10))
-
-    print("\nCampaign counts by channel:")
-    print(
-        campaign_configuration["channel"]
-        .value_counts()
-        .sort_index()
-    )
-
-    print("\nFestival campaign configuration:")
-    print(festival_campaign_configuration.head(10))
-
-    print("\nFestival campaigns by channel:")
-    print(
-        festival_campaign_configuration["channel"]
-        .value_counts()
-        .sort_index()
-    )
-
-    assert len(experiment_assignment) == N_AREAS
-
-    assert (
-        experiment_assignment["area_id"].nunique()
-        == N_AREAS
-    )
-
-    assert (
-        experiment_assignment["experiment_group"]
-        .value_counts()["treatment"]
-        == N_TREATMENT_AREAS
-    )
-
-    assert (
-        experiment_assignment["experiment_group"]
-        .value_counts()["control"]
-        == N_CONTROL_AREAS
-    )
-
-    assert (
-        experiment_assignment["assignment_date"]
-        .eq(EXPERIMENT_START)
-        .all()
-    )
-
-    print("\nExperiment assignment validation passed.")
-
     marketing_performance = generate_marketing_performance(
         campaign_configuration,
         festival_campaign_configuration,
@@ -1855,19 +1944,18 @@ if __name__ == "__main__":
         experiment_assignment,
     )
 
-    print("\nMarketing performance shape:")
-    print(marketing_performance.shape)
-
-    print("\nMarketing performance date range:")
-    print(
-        marketing_performance["date"].min(),
-        "to",
-        marketing_performance["date"].max(),
-    )
-
     validate_marketing_performance(
         marketing_performance,
         experiment_assignment,
+    )
+
+    (
+        customers,
+        hidden_customer_characteristics,
+        channel_responsiveness,
+    ) = generate_customers(
+        area_characteristics,
+        marketing_performance,
     )
 
     transactions = generate_transactions(
@@ -1878,12 +1966,6 @@ if __name__ == "__main__":
         marketing_performance,
     )
 
-    print("\nTransactions:")
-    print(transactions.head())
-
-    print("\nTransaction dataset shape:")
-    print(transactions.shape)
-
     marketing_touchpoints = generate_marketing_touchpoints(
         customers,
         hidden_customer_characteristics,
@@ -1891,8 +1973,748 @@ if __name__ == "__main__":
         marketing_performance,
     )
 
-    print("\nMarketing touchpoints:")
-    print(marketing_touchpoints.head())
+    # ---------------------------------------------------------
+    # 2. Validate experiment assignment
+    # ---------------------------------------------------------
 
-    print("\nMarketing touchpoint dataset shape:")
-    print(marketing_touchpoints.shape)
+    assert len(experiment_assignment) == N_AREAS
+
+    assert (
+        experiment_assignment["area_id"].nunique()
+        == N_AREAS
+    )
+
+    group_counts = (
+        experiment_assignment["experiment_group"]
+        .value_counts()
+    )
+
+    assert (
+        group_counts["treatment"]
+        == N_TREATMENT_AREAS
+    )
+
+    assert (
+        group_counts["control"]
+        == N_CONTROL_AREAS
+    )
+
+    assert (
+        experiment_assignment["assignment_date"]
+        .eq(EXPERIMENT_START)
+        .all()
+    )
+
+    # ---------------------------------------------------------
+    # 3. Customer acquisition summary
+    # ---------------------------------------------------------
+
+    entry_dates = (
+        hidden_customer_characteristics["entry_date"]
+    )
+
+    historical = (
+        entry_dates <= pd.Timestamp("2026-06-30")
+    ).sum()
+
+    experiment = (
+        (
+            entry_dates >= pd.Timestamp("2026-07-01")
+        )
+        & (
+            entry_dates <= pd.Timestamp("2026-07-28")
+        )
+    ).sum()
+
+    post = (
+        entry_dates >= pd.Timestamp("2026-07-29")
+    ).sum()
+
+    customer_summary = (
+        hidden_customer_characteristics[
+            ["customer_id", "entry_date"]
+        ]
+        .merge(
+            customers[
+                ["customer_id", "area_id"]
+            ],
+            on="customer_id",
+            how="left",
+        )
+        .merge(
+            experiment_assignment[
+                ["area_id", "experiment_group"]
+            ],
+            on="area_id",
+            how="left",
+        )
+    )
+
+    customer_summary["period"] = np.select(
+        [
+            customer_summary["entry_date"]
+            <= pd.Timestamp("2026-06-30"),
+            (
+                customer_summary["entry_date"]
+                <= pd.Timestamp("2026-07-28")
+            ),
+        ],
+        [
+            "pre_experiment",
+            "experiment",
+        ],
+        default="post_experiment",
+    )
+
+    # ---------------------------------------------------------
+    # 4. Pre-experiment acquisition trend
+    # ---------------------------------------------------------
+
+    pre_period = customer_summary[
+        customer_summary["period"] == "pre_experiment"
+    ].copy()
+
+    pre_period["week"] = (
+        pre_period["entry_date"]
+        .dt.to_period("W")
+        .dt.start_time
+    )
+
+    weekly_acquisition = (
+        pre_period
+        .groupby(["week", "experiment_group"])
+        .size()
+        .unstack(fill_value=0)
+    )
+
+    print("\nPre-experiment weekly customer acquisition:")
+    print(weekly_acquisition)
+
+    # ---------------------------------------------------------
+    # 4. Baseline acquisition balance
+    # ---------------------------------------------------------
+
+    assignment_check = (
+        area_characteristics[
+            [
+                "area_id",
+                "baseline_demand",
+                "customer_volume_potential",
+                "marketing_responsiveness",
+            ]
+        ]
+        .copy()
+    )
+
+    assignment_check["baseline_acquisition_potential"] = (
+        assignment_check["baseline_demand"]
+        * assignment_check["customer_volume_potential"]
+        * assignment_check["marketing_responsiveness"]
+    )
+
+    assignment_check = assignment_check.merge(
+        experiment_assignment[
+            ["area_id", "experiment_group"]
+        ],
+        on="area_id",
+        how="left",
+    )
+
+    baseline_potential = (
+        assignment_check
+        .groupby("experiment_group")[
+            "baseline_acquisition_potential"
+        ]
+        .sum()
+    )
+
+    # ---------------------------------------------------------
+    # 5. Compact validation summary
+    # ---------------------------------------------------------
+
+    print("\n=== Synthetic Data Generation Summary ===")
+
+    print("\nExperiment assignment:")
+    print(group_counts)
+
+    print("\nBaseline acquisition potential:")
+    print(baseline_potential)
+
+    print("\nCustomer count:")
+    print(len(customers))
+
+    print("\nCustomer entry date range:")
+    print(
+        entry_dates.min(),
+        "to",
+        entry_dates.max(),
+    )
+
+    print("\nCustomers acquired by period:")
+    print(
+        pd.Series(
+            {
+                "Historical": historical,
+                "Experiment": experiment,
+                "Post": post,
+            }
+        )
+    )
+
+    print("\nCustomer acquisition by experiment group:")
+    print(
+        customer_summary[
+            customer_summary["period"] == "experiment"
+        ]
+        .groupby("experiment_group")
+        .size()
+    )
+
+    print("\nCustomer acquisition by group and period:")
+    print(
+        customer_summary
+        .groupby(
+            ["period", "experiment_group"]
+        )
+        .size()
+    )
+
+    print("\nMarketing performance:")
+    print(
+        f"{len(marketing_performance):,} rows | "
+        f"{marketing_performance['date'].min().date()} "
+        f"to "
+        f"{marketing_performance['date'].max().date()}"
+    )
+
+    print("\nTransactions:")
+    print(f"{len(transactions):,} rows")
+
+    print("\nMarketing touchpoints:")
+    print(f"{len(marketing_touchpoints):,} rows")
+
+    # --------------------------------------------------------
+    # Customer lifecycle validation
+    # --------------------------------------------------------
+
+    customer_count = len(customers)
+
+    transaction_count = len(transactions)
+
+    completed_transactions = transactions.loc[
+        ~transactions["cancelled"]
+    ].copy()
+
+    purchase_counts = (
+        completed_transactions
+        .groupby("customer_id")
+        .size()
+    )
+
+    customer_purchase_counts = (
+        customers[["customer_id"]]
+        .merge(
+            purchase_counts.rename("purchase_count"),
+            on="customer_id",
+            how="left",
+        )
+        .fillna({"purchase_count": 0})
+    )
+
+    customers_with_0 = (
+        customer_purchase_counts["purchase_count"] == 0
+    ).sum()
+
+    customers_with_1 = (
+        customer_purchase_counts["purchase_count"] == 1
+    ).sum()
+
+    customers_with_2 = (
+        customer_purchase_counts["purchase_count"] == 2
+    ).sum()
+
+    customers_with_3_plus = (
+        customer_purchase_counts["purchase_count"] >= 3
+    ).sum()
+
+    cancelled_count = (
+        transactions["cancelled"]
+        .sum()
+    )
+
+    cancelled_rate = (
+        cancelled_count / transaction_count
+        if transaction_count > 0
+        else 0
+    )
+
+    first_purchase_count = (
+        completed_transactions
+        .sort_values(
+            ["customer_id", "transaction_date"]
+        )
+        .groupby("customer_id")
+        .head(1)
+        .shape[0]
+    )
+
+    repeat_purchase_count = (
+        len(completed_transactions)
+        - first_purchase_count
+    )
+
+    # --------------------------------------------------------
+    # Purchase gap analysis
+    # --------------------------------------------------------
+
+    completed_transactions_sorted = (
+        completed_transactions
+        .sort_values(
+            ["customer_id", "transaction_date"]
+        )
+    )
+
+    completed_transactions_sorted["purchase_gap_days"] = (
+        completed_transactions_sorted
+        .groupby("customer_id")["transaction_date"]
+        .diff()
+        .dt.days
+    )
+
+    purchase_gaps = (
+        completed_transactions_sorted[
+            "purchase_gap_days"
+        ]
+        .dropna()
+    )
+
+    # --------------------------------------------------------
+    # Print lifecycle summary
+    # --------------------------------------------------------
+
+    print("\nCustomer Lifecycle Summary")
+    print("-" * 40)
+
+    print(f"Customer count: {customer_count:,}")
+    print(f"Transaction count: {transaction_count:,}")
+
+    print(
+        f"Customers with 0 purchases: "
+        f"{customers_with_0:,}"
+    )
+
+    print(
+        f"Customers with 1 purchase: "
+        f"{customers_with_1:,}"
+    )
+
+    print(
+        f"Customers with 2 purchases: "
+        f"{customers_with_2:,}"
+    )
+
+    print(
+        f"Customers with 3+ purchases: "
+        f"{customers_with_3_plus:,}"
+    )
+
+    print(
+        f"Cancelled transactions: "
+        f"{cancelled_count:,} "
+        f"({cancelled_rate:.2%})"
+    )
+
+    print(
+        f"First purchase count: "
+        f"{first_purchase_count:,}"
+    )
+
+    print(
+        f"Repeat purchase count: "
+        f"{repeat_purchase_count:,}"
+    )
+
+    if len(purchase_gaps) > 0:
+
+        print(
+            f"Minimum purchase gap: "
+            f"{purchase_gaps.min():.0f} days"
+        )
+
+        print(
+            f"Median purchase gap: "
+            f"{purchase_gaps.median():.0f} days"
+        )
+
+        print(
+            f"75th percentile purchase gap: "
+            f"{purchase_gaps.quantile(0.75):.0f} days"
+        )
+
+        print(
+            f"Maximum purchase gap: "
+            f"{purchase_gaps.max():.0f} days"
+        )
+
+    else:
+
+        print("No repeat purchase gaps available.")
+
+    # --------------------------------------------------------
+    # Repeat tendency validation
+    # --------------------------------------------------------
+
+    customer_purchase_summary = (
+        customers[["customer_id"]]
+        .merge(
+            hidden_customer_characteristics[
+                [
+                    "customer_id",
+                    "repeat_purchase_tendency",
+                ]
+            ],
+            on="customer_id",
+            how="left",
+            validate="one_to_one",
+        )
+        .merge(
+            completed_transactions
+            .groupby("customer_id")
+            .size()
+            .rename("purchase_count"),
+            on="customer_id",
+            how="left",
+        )
+        .fillna({"purchase_count": 0})
+    )
+
+    customer_purchase_summary["is_repeat_customer"] = (
+        customer_purchase_summary["purchase_count"] >= 2
+    )
+
+    print("\nRepeat Tendency Validation")
+    print("-" * 40)
+
+    print(
+        customer_purchase_summary
+        .groupby(
+            pd.qcut(
+                customer_purchase_summary[
+                    "repeat_purchase_tendency"
+                ],
+                5,
+                duplicates="drop",
+            )
+        )
+        .agg(
+            customers=("customer_id", "count"),
+            avg_purchases=("purchase_count", "mean"),
+            repeat_customer_rate=(
+                "is_repeat_customer",
+                "mean",
+            ),
+        )
+    )
+
+    # --------------------------------------------------------
+    # Repeat timing validation
+    # --------------------------------------------------------
+
+    repeat_transactions = (
+        completed_transactions
+        .sort_values(
+            ["customer_id", "transaction_date"]
+        )
+        .copy()
+    )
+
+    repeat_transactions["purchase_number"] = (
+        repeat_transactions
+        .groupby("customer_id")
+        .cumcount()
+        + 1
+    )
+
+    repeat_transactions = repeat_transactions[
+        repeat_transactions["purchase_number"] >= 2
+    ].copy()
+
+    repeat_transactions["purchase_gap_days"] = (
+        repeat_transactions
+        .groupby("customer_id")["transaction_date"]
+        .diff()
+        .dt.days
+    )
+
+    repeat_transactions = repeat_transactions[
+        repeat_transactions["purchase_gap_days"].notna()
+    ].copy()
+
+    repeat_timing_validation = (
+        repeat_transactions[
+            [
+                "customer_id",
+                "purchase_gap_days",
+            ]
+        ]
+        .merge(
+            hidden_customer_characteristics[
+                [
+                    "customer_id",
+                    "repeat_purchase_tendency",
+                ]
+            ],
+            on="customer_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    print("\nRepeat Timing Validation")
+    print("-" * 40)
+
+    print(
+        repeat_timing_validation
+        .groupby(
+            pd.qcut(
+                repeat_timing_validation[
+                    "repeat_purchase_tendency"
+                ],
+                5,
+                duplicates="drop",
+            )
+        )
+        .agg(
+            repeat_purchases=(
+                "customer_id",
+                "count",
+            ),
+            median_gap_days=(
+                "purchase_gap_days",
+                "median",
+            ),
+            avg_gap_days=(
+                "purchase_gap_days",
+                "mean",
+            ),
+        )
+    )
+
+    # --------------------------------------------------------
+    # Customer state consistency validation
+    # --------------------------------------------------------
+
+    print("\nCustomer State Consistency Validation")
+    print("-" * 40)
+
+    transaction_check = (
+        transactions
+        .merge(
+            customers,
+            on="customer_id",
+            how="left",
+            validate="many_to_one",
+        )
+        .merge(
+            hidden_customer_characteristics[
+                [
+                    "customer_id",
+                    "entry_date",
+                ]
+            ],
+            on="customer_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    # --------------------------------------------------------
+    # Check 1: Every transaction belongs to a valid customer
+    # --------------------------------------------------------
+
+    missing_customers = (
+        transaction_check["area_id"].isna().sum()
+    )
+
+    assert missing_customers == 0, (
+        "Transactions contain unknown customer IDs."
+    )
+
+    print(
+        f"Transactions with valid customer IDs: "
+        f"{len(transaction_check):,}"
+    )
+
+    # --------------------------------------------------------
+    # Check 2: No transaction occurs before customer entry
+    # --------------------------------------------------------
+
+    transaction_before_entry = (
+        transaction_check["transaction_date"]
+        < transaction_check["entry_date"]
+    )
+
+    before_entry_count = transaction_before_entry.sum()
+
+    assert before_entry_count == 0, (
+        "Transactions occur before customer entry date."
+    )
+
+    print(
+        f"Transactions before customer entry: "
+        f"{before_entry_count:,}"
+    )
+
+    # --------------------------------------------------------
+    # Check 3: Transaction dates are within simulation period
+    # --------------------------------------------------------
+
+    invalid_transaction_dates = (
+        (transaction_check["transaction_date"] < HISTORICAL_START)
+        | (
+            transaction_check["transaction_date"]
+            > POST_EXPERIMENT_END
+        )
+    )
+
+    invalid_date_count = invalid_transaction_dates.sum()
+
+    assert invalid_date_count == 0, (
+        "Transactions fall outside the simulation period."
+    )
+
+    print(
+        f"Transactions outside simulation period: "
+        f"{invalid_date_count:,}"
+    )
+
+    # --------------------------------------------------------
+    # Check 4: Completed purchases per customer
+    # --------------------------------------------------------
+
+    completed_transactions_check = (
+        transaction_check[
+            ~transaction_check["cancelled"]
+        ]
+        .sort_values(
+            ["customer_id", "transaction_date"]
+        )
+        .copy()
+    )
+
+    completed_transactions_check["purchase_number"] = (
+        completed_transactions_check
+        .groupby("customer_id")
+        .cumcount()
+        + 1
+    )
+
+    first_purchase_count_check = (
+        (
+            completed_transactions_check[
+                "purchase_number"
+            ]
+            == 1
+        )
+        .sum()
+    )
+
+    repeat_purchase_count_check = (
+        (
+            completed_transactions_check[
+                "purchase_number"
+            ]
+            >= 2
+        )
+        .sum()
+    )
+
+    print(
+        f"Completed first purchases: "
+        f"{first_purchase_count_check:,}"
+    )
+
+    print(
+        f"Completed repeat purchases: "
+        f"{repeat_purchase_count_check:,}"
+    )
+
+    # --------------------------------------------------------
+    # Check 5: Repeat purchases must have a previous purchase
+    # --------------------------------------------------------
+
+    repeat_without_previous = (
+        completed_transactions_check[
+            "purchase_number"
+        ]
+        < 2
+    ).sum()
+
+    # This should simply equal the number of first purchases.
+    assert (
+        first_purchase_count_check
+        == completed_transactions_check[
+            "customer_id"
+        ].nunique()
+    )
+
+    print(
+        f"Customers with completed purchases: "
+        f"{completed_transactions_check['customer_id'].nunique():,}"
+    )
+
+    # --------------------------------------------------------
+    # Check 6: Completed purchase dates must increase
+    # --------------------------------------------------------
+
+    purchase_date_gaps = (
+        completed_transactions_check
+        .groupby("customer_id")["transaction_date"]
+        .diff()
+        .dt.days
+        .dropna()
+    )
+
+    invalid_purchase_order = (
+        purchase_date_gaps <= 0
+    ).sum()
+
+    assert invalid_purchase_order == 0, (
+        "A customer has multiple completed purchases "
+        "on the same day or in reverse chronological order."
+    )
+
+    print(
+        f"Invalid purchase ordering: "
+        f"{invalid_purchase_order:,}"
+    )
+
+    # --------------------------------------------------------
+    # Check 7: Minimum repeat gap
+    # --------------------------------------------------------
+
+    if len(purchase_date_gaps) > 0:
+
+        minimum_repeat_gap = (
+            purchase_date_gaps.min()
+        )
+
+        print(
+            f"Minimum completed-purchase gap: "
+            f"{minimum_repeat_gap:.0f} days"
+        )
+
+        assert minimum_repeat_gap >= 14, (
+            "Repeat purchases occur too soon after "
+            "the previous purchase."
+        )
+
+    # --------------------------------------------------------
+    # Final lifecycle consistency check
+    # --------------------------------------------------------
+
+    print(
+        "\nAll customer lifecycle consistency checks passed."
+    )
+
+    print("\nAll current validations passed.")
