@@ -210,6 +210,138 @@ Areas and customers differ in demand, behavior, economics, and marketing respons
 
 ---
 
+### Transaction economics are denominated in USD
+
+All transaction-level economic values are generated in USD.
+
+**Reason:** Marketing spend is already denominated in USD, so transaction economics should use the same currency to maintain a coherent economic model.
+
+**Impact:** Revenue, discount, subsidy, contribution margin, customer value, and related economic metrics are interpreted in USD.
+
+**Status:** Locked
+
+---
+
+### Customer and area AOV tendencies create persistent economic heterogeneity
+
+Customers and areas have persistent AOV tendencies that influence realized booking value.
+
+**Reason:** Hotel booking values should vary systematically across customers and areas rather than being generated from one common distribution.
+
+**Impact:** Realized AOV can vary across customers, areas, and transactions while preserving stochastic variation.
+
+**Status:** Locked
+
+---
+
+### Contribution margin is derived from transaction economics
+
+Contribution margin is calculated as:
+
+`Contribution Margin = Revenue - Subsidy - Discount`
+
+Contribution margin is not generated as an independent raw transaction attribute.
+
+**Reason:** Generating contribution margin independently could create inconsistencies between revenue and transaction-level costs.
+
+**Impact:** Economic metrics can be reconciled directly from the underlying transaction fields.
+
+**Status:** Locked
+
+---
+
+### Marketing spend is separate from transaction contribution margin
+
+Marketing spend is not deducted from transaction-level contribution margin.
+
+**Reason:** Marketing investment and transaction-level variable costs represent different economic concepts and are required separately for incrementality and budget allocation analysis.
+
+**Impact:** Incremental contribution margin can be evaluated against incremental marketing investment without double-counting marketing spend inside transaction economics.
+
+**Status:** Locked
+
+---
+
+### Customer price sensitivity affects promotional costs
+
+Customers have different levels of price sensitivity that influence discount and subsidy rates.
+
+**Reason:** Promotional costs should vary systematically across customers rather than being completely independent of customer behavior.
+
+**Impact:** More price-sensitive customers tend to receive higher promotional costs, creating realistic variation in contribution margin.
+
+**Status:** Locked
+
+---
+
+### Repeat purchasing is modeled as a state-based process
+
+Customers do not receive a predetermined number of purchases.
+
+A customer progresses through purchasing states based on observed purchase events:
+
+`No Purchase → First Purchase → Repeat Purchase → Further Repeat Purchase`
+
+**Reason:** Customer value should emerge from purchasing behavior rather than being assigned directly.
+
+**Impact:** Customers naturally develop different purchase frequencies and cumulative economic values.
+
+**Status:** Locked
+
+---
+
+### Repeat purchase tendency affects both repeat likelihood and timing
+
+Customers have persistent repeat purchase tendencies.
+
+Higher repeat purchase tendency increases the likelihood of repeat purchasing and reduces the expected waiting period between purchases.
+
+**Reason:** Repeat behavior should reflect both whether customers return and how quickly they return.
+
+**Impact:** Purchase frequency and repeat-purchase timing vary systematically across customers.
+
+**Status:** Locked
+
+---
+
+### Repeat purchase economics are not artificially inflated
+
+Repeat purchases are not assumed to have systematically higher AOV than first purchases.
+
+**Reason:** The main role of repeat purchase behavior in the simulation is to model customer frequency and timing. Artificially increasing repeat AOV would introduce an unnecessary economic assumption.
+
+**Impact:** Customer value increases primarily through additional purchases rather than an arbitrary repeat-purchase premium.
+
+**Status:** Locked
+
+---
+
+### Customer value emerges from transaction history
+
+Customer value is not directly assigned as a source attribute.
+
+It emerges from the customer's completed transaction history.
+
+**Reason:** Customer value should reflect actual purchasing behavior and transaction economics.
+
+**Impact:** Customers with more completed purchases naturally accumulate higher revenue and contribution margin.
+
+**Status:** Locked
+
+---
+
+### Cancelled transactions have no realized transaction economics
+
+Cancelled transactions have zero realized revenue, discount, subsidy, and contribution margin.
+
+**Reason:** A cancelled booking should not contribute realized transaction economics.
+
+**Impact:** Cancellation affects customer behavior and transaction counts but does not create realized revenue or contribution margin.
+
+**Status:** Locked
+
+---
+
 ### Marketing response includes diminishing returns
 
 Additional spend is not assumed to produce a constant return indefinitely.

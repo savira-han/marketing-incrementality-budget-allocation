@@ -224,7 +224,7 @@ def generate_areas():
                 size=N_AREAS,
             ),
             "aov_tendency": RANDOM_GENERATOR.lognormal(
-                mean=np.log(1_000_000),
+                mean=np.log(60),
                 sigma=0.20,
                 size=N_AREAS,
             ),
@@ -1063,7 +1063,7 @@ def generate_customers(area_characteristics, marketing_performance):
                 size=customer_count,
             ),
             "aov_tendency": RANDOM_GENERATOR.lognormal(
-                mean=np.log(1_000_000),
+                mean=np.log(60),
                 sigma=0.35,
                 size=customer_count,
             ),
@@ -1483,7 +1483,7 @@ def generate_transactions(
             previous_purchase,
             (
                 1.0
-                + 0.35
+                + 1.25
                 * customer_repeat_tendency[
                     eligible_indices
                 ]
@@ -1732,7 +1732,7 @@ def generate_transactions(
 
                 mean_repeat_gap = (
                     120
-                    - 60 * repeat_tendency
+                    - 90 * repeat_tendency
                 )
 
                 repeat_gap = max(
@@ -2716,5 +2716,699 @@ if __name__ == "__main__":
     print(
         "\nAll customer lifecycle consistency checks passed."
     )
+
+    # ============================================================
+    # DAY 2 - CUSTOMER ECONOMICS AUDIT
+    # ============================================================
+
+    economic_audit = transactions.copy()
+
+    economic_audit["contribution_margin"] = (
+        economic_audit["revenue"]
+        - economic_audit["subsidy"]
+        - economic_audit["discount"]
+    )
+
+    economic_audit["discount_rate"] = (
+        economic_audit["discount"] / economic_audit["revenue"]
+    )
+
+    economic_audit["subsidy_rate"] = (
+        economic_audit["subsidy"] / economic_audit["revenue"]
+    )
+
+    completed = economic_audit[~economic_audit["cancelled"]].copy()
+
+    print("\n" + "=" * 70)
+    print("DAY 2 - CUSTOMER ECONOMICS AUDIT")
+    print("=" * 70)
+
+    print("\nTRANSACTION VOLUME")
+    print(f"Total transactions: {len(economic_audit):,}")
+    print(f"Completed transactions: {len(completed):,}")
+    print(f"Cancelled transactions: {economic_audit['cancelled'].sum():,}")
+    print(
+        f"Cancellation rate: "
+        f"{economic_audit['cancelled'].mean():.2%}"
+    )
+
+    print("\nREVENUE")
+    print(f"Mean AOV: ${completed['revenue'].mean():,.2f}")
+    print(f"Median AOV: ${completed['revenue'].median():,.2f}")
+    print(f"P25 AOV: ${completed['revenue'].quantile(0.25):,.2f}")
+    print(f"P75 AOV: ${completed['revenue'].quantile(0.75):,.2f}")
+    print(f"P95 AOV: ${completed['revenue'].quantile(0.95):,.2f}")
+
+    print("\nDISCOUNT")
+    print(
+        f"Mean discount rate: "
+        f"{completed['discount_rate'].mean():.2%}"
+    )
+    print(
+        f"Median discount rate: "
+        f"{completed['discount_rate'].median():.2%}"
+    )
+    print(
+        f"Mean discount per booking: "
+        f"${completed['discount'].mean():,.2f}"
+    )
+
+    print("\nSUBSIDY")
+    print(
+        f"Mean subsidy rate: "
+        f"{completed['subsidy_rate'].mean():.2%}"
+    )
+    print(
+        f"Median subsidy rate: "
+        f"{completed['subsidy_rate'].median():.2%}"
+    )
+    print(
+        f"Mean subsidy per booking: "
+        f"${completed['subsidy'].mean():,.2f}"
+    )
+
+    print("\nCONTRIBUTION MARGIN")
+    print(
+        f"Mean CM per booking: "
+        f"${completed['contribution_margin'].mean():,.2f}"
+    )
+    print(
+        f"Median CM per booking: "
+        f"${completed['contribution_margin'].median():,.2f}"
+    )
+    print(
+        f"CM margin: "
+        f"{completed['contribution_margin'].sum() / completed['revenue'].sum():.2%}"
+    )
+    print(
+        f"Negative CM bookings: "
+        f"{(completed['contribution_margin'] < 0).mean():.2%}"
+    )
+
+    print("\nCUSTOMER ECONOMICS")
+    customer_economics = (
+        completed
+        .groupby("customer_id")
+        .agg(
+            purchases=("transaction_id", "count"),
+            revenue=("revenue", "sum"),
+            subsidy=("subsidy", "sum"),
+            discount=("discount", "sum"),
+            contribution_margin=("contribution_margin", "sum"),
+        )
+    )
+
+    print(
+        f"Customers with completed purchases: "
+        f"{len(customer_economics):,}"
+    )
+    print(
+        f"Mean customer revenue: "
+        f"${customer_economics['revenue'].mean():,.2f}"
+    )
+    print(
+        f"Median customer revenue: "
+        f"${customer_economics['revenue'].median():,.2f}"
+    )
+    print(
+        f"Mean customer CM: "
+        f"${customer_economics['contribution_margin'].mean():,.2f}"
+    )
+    print(
+        f"Median customer CM: "
+        f"${customer_economics['contribution_margin'].median():,.2f}"
+    )
+
+    print("\nFIRST VS REPEAT PURCHASES")
+
+    purchase_sequence = (
+        completed
+        .sort_values(["customer_id", "transaction_date"])
+        .copy()
+    )
+
+    purchase_sequence["purchase_number"] = (
+        purchase_sequence
+        .groupby("customer_id")
+        .cumcount() + 1
+    )
+
+    first_purchase = purchase_sequence[
+        purchase_sequence["purchase_number"] == 1
+    ]
+
+    repeat_purchase = purchase_sequence[
+        purchase_sequence["purchase_number"] > 1
+    ]
+
+    print(
+        f"First-purchase AOV: "
+        f"${first_purchase['revenue'].mean():,.2f}"
+    )
+    print(
+        f"Repeat-purchase AOV: "
+        f"${repeat_purchase['revenue'].mean():,.2f}"
+    )
+
+    print(
+        f"First-purchase CM: "
+        f"${first_purchase['contribution_margin'].mean():,.2f}"
+    )
+    print(
+        f"Repeat-purchase CM: "
+        f"${repeat_purchase['contribution_margin'].mean():,.2f}"
+    )
+
+    print("\nECONOMIC BEHAVIOR VALIDATION")
+
+    # ------------------------------------------------------------
+    # Customer value by purchase frequency
+    # ------------------------------------------------------------
+
+    customer_economics["purchase_group"] = pd.cut(
+        customer_economics["purchases"],
+        bins=[0, 1, 2, float("inf")],
+        labels=["1 purchase", "2 purchases", "3+ purchases"],
+    )
+
+    customer_value_by_frequency = (
+        customer_economics
+        .groupby("purchase_group", observed=False)
+        .agg(
+            customers=("purchases", "size"),
+            mean_revenue=("revenue", "mean"),
+            mean_contribution_margin=(
+                "contribution_margin",
+                "mean",
+            ),
+        )
+    )
+
+    print("\nCUSTOMER VALUE BY PURCHASE FREQUENCY")
+    print(customer_value_by_frequency.to_string())
+
+    # ------------------------------------------------------------
+    # Area-level economic variation
+    # ------------------------------------------------------------
+
+    area_economics = (
+        completed
+        .groupby("customer_id")
+        .agg(
+            area_id=("customer_id", lambda x: customers.loc[
+                customers["customer_id"].eq(x.iloc[0]),
+                "area_id"
+            ].iloc[0]),
+        )
+        .reset_index()
+    )
+
+    area_economics = (
+        completed
+        .merge(
+            customers[["customer_id", "area_id"]],
+            on="customer_id",
+            how="left",
+        )
+        .groupby("area_id")
+        .agg(
+            transactions=("transaction_id", "count"),
+            aov=("revenue", "mean"),
+            contribution_margin=("contribution_margin", "mean"),
+        )
+    )
+
+    print("\nAREA-LEVEL ECONOMIC VARIATION")
+    print(
+        f"AOV range: "
+        f"${area_economics['aov'].min():,.2f} - "
+        f"${area_economics['aov'].max():,.2f}"
+    )
+    print(
+        f"Mean area AOV: "
+        f"${area_economics['aov'].mean():,.2f}"
+    )
+    print(
+        f"Area AOV standard deviation: "
+        f"${area_economics['aov'].std():,.2f}"
+    )
+
+    # ------------------------------------------------------------
+    # Promotional cost behavior
+    # ------------------------------------------------------------
+
+    print("\nPROMOTIONAL COST VALIDATION")
+    print(
+        f"Discount rate range: "
+        f"{completed['discount_rate'].min():.2%} - "
+        f"{completed['discount_rate'].max():.2%}"
+    )
+    print(
+        f"Subsidy rate range: "
+        f"{completed['subsidy_rate'].min():.2%} - "
+        f"{completed['subsidy_rate'].max():.2%}"
+    )
+
+    print(
+        f"Discount as % of revenue: "
+        f"{completed['discount'].sum() / completed['revenue'].sum():.2%}"
+    )
+    print(
+        f"Subsidy as % of revenue: "
+        f"{completed['subsidy'].sum() / completed['revenue'].sum():.2%}"
+    )
+
+    # ------------------------------------------------------------
+    # Cancellation economics
+    # ------------------------------------------------------------
+
+    cancelled = economic_audit[
+        economic_audit["cancelled"]
+    ].copy()
+
+    print("\nCANCELLATION ECONOMICS")
+    print(
+        f"Cancelled revenue: "
+        f"${cancelled['revenue'].sum():,.2f}"
+    )
+    print(
+        f"Cancelled discount: "
+        f"${cancelled['discount'].sum():,.2f}"
+    )
+    print(
+        f"Cancelled subsidy: "
+        f"${cancelled['subsidy'].sum():,.2f}"
+    )
+    print(
+        f"Cancelled CM: "
+        f"${cancelled['contribution_margin'].sum():,.2f}"
+    )
+
+    print("\nPERSISTENT CHARACTERISTICS VS REALIZED BEHAVIOR")
+
+    customer_behavior = (
+        customers[["customer_id"]]
+        .merge(
+            hidden_customer_characteristics,
+            on="customer_id",
+            how="left",
+        )
+        .merge(
+            customer_economics[
+                [
+                    "purchases",
+                    "revenue",
+                    "contribution_margin",
+                ]
+            ],
+            left_on="customer_id",
+            right_index=True,
+            how="left",
+        )
+    )
+
+    customer_behavior["purchases"] = (
+        customer_behavior["purchases"]
+        .fillna(0)
+    )
+
+    customer_behavior["revenue"] = (
+        customer_behavior["revenue"]
+        .fillna(0)
+    )
+
+    customer_behavior["contribution_margin"] = (
+        customer_behavior["contribution_margin"]
+        .fillna(0)
+    )
+
+    customer_behavior["realized_aov"] = np.where(
+        customer_behavior["purchases"] > 0,
+        customer_behavior["revenue"]
+        / customer_behavior["purchases"],
+        np.nan,
+    )
+
+    print("\nAOV TENDENCY VS REALIZED AOV")
+
+    aov_validation = customer_behavior[
+        customer_behavior["purchases"] > 0
+    ]
+
+    print(
+        f"Correlation: "
+        f"{aov_validation['aov_tendency'].corr(
+            aov_validation['realized_aov']
+        ):.3f}"
+    )
+
+    print("\nPRICE SENSITIVITY VS CUSTOMER CM")
+
+    print(
+        f"Correlation: "
+        f"{customer_behavior['price_sensitivity'].corr(
+            customer_behavior['contribution_margin']
+        ):.3f}"
+    )
+
+    print("\nREPEAT PURCHASE TENDENCY VS PURCHASE FREQUENCY")
+
+    print(
+        f"Correlation: "
+        f"{customer_behavior['repeat_purchase_tendency'].corr(
+            customer_behavior['purchases']
+        ):.3f}"
+    )
+
+    print("\nPURCHASE PROPENSITY VS PURCHASE FREQUENCY")
+
+    print(
+        f"Correlation: "
+        f"{customer_behavior['purchase_propensity'].corr(
+            customer_behavior['purchases']
+        ):.3f}"
+    )
+
+    print("\nREPEAT BEHAVIOR DIAGNOSTIC")
+
+    # --------------------------------------------------------
+    # Identify first and repeat purchases
+    # --------------------------------------------------------
+
+    purchase_sequence = (
+        completed
+        .sort_values(["customer_id", "transaction_date"])
+        .copy()
+    )
+
+    purchase_sequence["purchase_number"] = (
+        purchase_sequence
+        .groupby("customer_id")
+        .cumcount()
+        + 1
+    )
+
+    # --------------------------------------------------------
+    # 1. Does repeat tendency affect becoming a repeat customer?
+    # --------------------------------------------------------
+
+    customer_purchase_counts = (
+        purchase_sequence
+        .groupby("customer_id")["purchase_number"]
+        .max()
+    )
+
+    repeat_customer_flag = (
+        customer_purchase_counts > 1
+    ).rename("is_repeat_customer")
+
+    repeat_customer_test = (
+        hidden_customer_characteristics[
+            ["customer_id", "repeat_purchase_tendency"]
+        ]
+        .merge(
+            repeat_customer_flag,
+            on="customer_id",
+            how="left",
+        )
+    )
+
+    repeat_customer_test["is_repeat_customer"] = (
+        repeat_customer_test["is_repeat_customer"]
+        .fillna(False)
+    )
+
+    repeat_customer_test["tendency_quartile"] = pd.qcut(
+        repeat_customer_test["repeat_purchase_tendency"],
+        q=4,
+        labels=["Q1", "Q2", "Q3", "Q4"],
+    )
+
+    repeat_rate_by_quartile = (
+        repeat_customer_test
+        .groupby(
+            "tendency_quartile",
+            observed=False,
+        )
+        .agg(
+            customers=("customer_id", "size"),
+            repeat_customer_rate=(
+                "is_repeat_customer",
+                "mean",
+            ),
+        )
+    )
+
+    print("\nREPEAT CUSTOMER RATE BY TENDENCY QUARTILE")
+    print(
+        repeat_rate_by_quartile.to_string()
+    )
+
+    # --------------------------------------------------------
+    # 2. Among repeat customers, does tendency affect
+    #    number of repeat purchases?
+    # --------------------------------------------------------
+
+    repeat_customer_ids = repeat_customer_flag[
+        repeat_customer_flag
+    ].index
+
+    repeat_frequency_test = (
+        customer_economics
+        .loc[
+            customer_economics.index.isin(
+                repeat_customer_ids
+            )
+        ]
+        .reset_index()
+        .merge(
+            hidden_customer_characteristics[
+                [
+                    "customer_id",
+                    "repeat_purchase_tendency",
+                ]
+            ],
+            on="customer_id",
+            how="left",
+        )
+    )
+
+    repeat_frequency_test["repeat_purchases"] = (
+        repeat_frequency_test["purchases"] - 1
+    )
+
+    repeat_frequency_correlation = (
+        repeat_frequency_test[
+            "repeat_purchase_tendency"
+        ].corr(
+            repeat_frequency_test[
+                "repeat_purchases"
+            ]
+        )
+    )
+
+    print("\nREPEAT PURCHASES VS TENDENCY")
+    print(
+        f"Correlation: "
+        f"{repeat_frequency_correlation:.3f}"
+    )
+
+    # --------------------------------------------------------
+    # 3. Does tendency affect repeat purchase timing?
+    # --------------------------------------------------------
+
+    repeat_gap_data = (
+        purchase_sequence
+        .groupby("customer_id")
+        .agg(
+            first_purchase_date=(
+                "transaction_date",
+                "min",
+            ),
+            last_purchase_date=(
+                "transaction_date",
+                "max",
+            ),
+            purchases=(
+                "purchase_number",
+                "max",
+            ),
+        )
+        .reset_index()
+    )
+
+    repeat_gap_data = repeat_gap_data[
+        repeat_gap_data["purchases"] > 1
+    ].copy()
+
+    repeat_gap_data = repeat_gap_data.merge(
+        hidden_customer_characteristics[
+            [
+                "customer_id",
+                "repeat_purchase_tendency",
+            ]
+        ],
+        on="customer_id",
+        how="left",
+    )
+
+    repeat_gap_data["days_from_first_to_last"] = (
+        repeat_gap_data["last_purchase_date"]
+        - repeat_gap_data["first_purchase_date"]
+    ).dt.days
+
+    repeat_gap_correlation = (
+        repeat_gap_data[
+            "repeat_purchase_tendency"
+        ].corr(
+            repeat_gap_data[
+                "days_from_first_to_last"
+            ]
+        )
+    )
+
+    print(
+        "\nREPEAT TENDENCY VS DAYS BETWEEN PURCHASES"
+    )
+
+    print(
+        f"Correlation: "
+        f"{repeat_gap_correlation:.3f}"
+    )
+
+    print("\nREPEAT PURCHASE GAP VALIDATION")
+
+    repeat_gap_sequence = (
+        purchase_sequence[
+            purchase_sequence["purchase_number"] > 1
+        ]
+        .copy()
+    )
+
+    repeat_gap_sequence["previous_purchase_date"] = (
+        repeat_gap_sequence
+        .groupby("customer_id")["transaction_date"]
+        .shift(1)
+    )
+
+    repeat_gap_sequence["repeat_gap_days"] = (
+        repeat_gap_sequence["transaction_date"]
+        - repeat_gap_sequence["previous_purchase_date"]
+    ).dt.days
+
+    repeat_gap_sequence = repeat_gap_sequence.merge(
+        hidden_customer_characteristics[
+            [
+                "customer_id",
+                "repeat_purchase_tendency",
+            ]
+        ],
+        on="customer_id",
+        how="left",
+    )
+
+    repeat_gap_correlation = (
+        repeat_gap_sequence[
+            "repeat_purchase_tendency"
+        ].corr(
+            repeat_gap_sequence[
+                "repeat_gap_days"
+            ]
+        )
+    )
+
+    print(
+        f"Repeat tendency vs actual repeat gap: "
+        f"{repeat_gap_correlation:.3f}"
+    )
+
+    print("\nAVERAGE REPEAT GAP BY TENDENCY QUARTILE")
+
+    repeat_gap_sequence["tendency_quartile"] = pd.qcut(
+        repeat_gap_sequence["repeat_purchase_tendency"],
+        q=4,
+        labels=["Q1", "Q2", "Q3", "Q4"],
+    )
+
+    repeat_gap_by_quartile = (
+        repeat_gap_sequence
+        .groupby(
+            "tendency_quartile",
+            observed=False,
+        )
+        .agg(
+            repeat_purchases=("customer_id", "size"),
+            mean_repeat_gap_days=(
+                "repeat_gap_days",
+                "mean",
+            ),
+            median_repeat_gap_days=(
+                "repeat_gap_days",
+                "median",
+            ),
+        )
+    )
+
+    print(
+        repeat_gap_by_quartile.to_string()
+    )
+
+    print("\nPRICE SENSITIVITY VALIDATION")
+
+    price_sensitivity_test = (
+        completed
+        .merge(
+            hidden_customer_characteristics[
+                [
+                    "customer_id",
+                    "price_sensitivity",
+                ]
+            ],
+            on="customer_id",
+            how="left",
+        )
+    )
+
+    price_sensitivity_test["discount_rate"] = (
+        price_sensitivity_test["discount"]
+        / price_sensitivity_test["revenue"]
+    )
+
+    price_sensitivity_test["subsidy_rate"] = (
+        price_sensitivity_test["subsidy"]
+        / price_sensitivity_test["revenue"]
+    )
+
+    discount_correlation = (
+        price_sensitivity_test[
+            "price_sensitivity"
+        ].corr(
+            price_sensitivity_test[
+                "discount_rate"
+            ]
+        )
+    )
+
+    subsidy_correlation = (
+        price_sensitivity_test[
+            "price_sensitivity"
+        ].corr(
+            price_sensitivity_test[
+                "subsidy_rate"
+            ]
+        )
+    )
+
+    print(
+        f"Price sensitivity vs discount rate: "
+        f"{discount_correlation:.3f}"
+    )
+
+    print(
+        f"Price sensitivity vs subsidy rate: "
+        f"{subsidy_correlation:.3f}"
+    )
+
+    print("\n" + "=" * 70)
 
     print("\nAll current validations passed.")

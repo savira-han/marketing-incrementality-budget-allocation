@@ -1230,3 +1230,463 @@ Customer value
 Further lifecycle tuning is not required at this stage.
 
 The next stage will extend the validated customer lifecycle into **customer economics**, including AOV, revenue, subsidy, discount, cancellation economics, contribution margin, and customer value.
+
+# Day 4 - Customer Economics & Purchasing Behavior
+
+Status: Completed
+Focus: Build and validate customer-level transaction economics, repeat-purchase behavior, and contribution-margin inputs as part of the synthetic business simulator.
+
+---
+
+## Objective
+
+Extend the validated customer lifecycle into a coherent customer economics system.
+
+The objective was to ensure that transaction value, promotional costs, contribution margin, customer value, and repeat behavior are generated from persistent customer and area characteristics rather than independent random values.
+
+The economic system also needed to remain consistent with the project's primary business outcome:
+
+> Incremental Contribution Margin
+
+---
+
+## 1. Economic Currency
+
+### Decision
+
+All transaction economics are denominated in USD.
+
+This includes:
+
+* Revenue
+* AOV
+* Discount
+* Subsidy
+* Contribution margin
+
+### Change
+
+The original AOV scale was adjusted from an IDR-like magnitude to a USD-denominated hotel-booking scale.
+
+The customer and area AOV tendencies were changed to use:
+
+```
+`np.log(60)`
+```
+
+while preserving the existing distribution structure and variation.
+
+### Why
+
+Marketing spend was already denominated in USD.
+
+Using a consistent currency across marketing spend and transaction economics makes the later contribution-margin and budget-allocation analysis internally coherent.
+
+The distribution shape was preserved rather than changing the underlying variability of customer economics.
+
+---
+
+## 2. Transaction Economics
+
+### Decision
+
+The raw `transactions` table contains economic inputs rather than a pre-calculated contribution-margin field.
+
+The source fields remain:
+
+```
+`transaction_id
+customer_id
+transaction_date
+revenue
+subsidy
+discount
+cancelled
+`
+```
+
+Contribution margin is derived later as:
+
+```
+`Contribution Margin
+=
+Revenue - Subsidy - Discount
+`
+```
+
+Marketing spend remains separate in `marketing_performance`.
+
+It is not deducted from transaction-level contribution margin.
+
+### Why
+
+This keeps the raw transaction data focused on observable transaction economics while allowing contribution margin to remain a derived analytical measure.
+
+Marketing profitability and incremental contribution margin from marketing investment will be evaluated later by connecting transaction economics with marketing spend and causal evidence.
+
+---
+
+## 3. AOV Generation
+
+### Change
+
+Transaction revenue is generated from persistent customer and area-level AOV tendencies with additional transaction-level variation.
+
+The dependency is:
+
+```
+`Customer AOV tendency
+        +
+Area AOV tendency
+        +
+Transaction-level variation
+        ↓
+Realized transaction revenue
+`
+```
+
+### Why
+
+Customers should have persistent differences in their typical booking value while transactions should still contain natural stochastic variation.
+
+This avoids making AOV completely deterministic from a hidden customer characteristic.
+
+---
+
+## 4. Promotional Cost Generation
+
+### Change
+
+Discount and subsidy are generated as transaction-level rates applied to the underlying booking value.
+
+Customer `price_sensitivity` influences both rates.
+
+The resulting structure is:
+
+```
+`Price sensitivity
+        ↓
+Discount / Subsidy rate
+        ↓
+Promotional cost
+        ↓
+Contribution margin
+`
+```
+
+Discount and subsidy are set to zero for cancelled transactions.
+
+### Why
+
+Price sensitivity should affect the economics of a customer's transaction rather than being stored as an unused hidden characteristic.
+
+This creates a direct connection between persistent customer behavior and realized transaction economics.
+
+---
+
+## 5. Repeat Purchase Economics
+
+### Change
+
+Repeat purchase behavior was strengthened so that `repeat_purchase_tendency` influences both:
+
+* Repeat-purchase probability
+* Time between completed purchases
+
+The repeat-purchase probability uses a stronger tendency effect:
+
+```
+`1.0 + 1.25 × repeat_purchase_tendency`
+```
+
+The expected repeat gap was revised to:
+
+```
+`120 - 90 × repeat_purchase_tendency`
+```
+
+with the existing minimum waiting period and stochastic Gamma variation retained.
+
+### Why
+
+The initial mechanism produced only a weak observable relationship between repeat tendency and overall purchase frequency.
+
+The revised mechanism makes repeat tendency sufficiently influential to appear in observable repeat behavior while preserving stochastic variation from marketing exposure, purchase propensity, seasonality, area characteristics, and observation time.
+
+---
+
+## 6. Customer Value
+
+Customer value is generated naturally through the combination of:
+
+```
+`Purchase frequency
+      ×
+Realized transaction economics
+      ↓
+Customer revenue
+      ↓
+Customer contribution margin
+`
+```
+
+No fixed customer lifetime value is assigned during transaction generation.
+
+Customer-level value is derived from completed transaction history.
+
+### Validation
+
+Customer value increased naturally with purchase frequency:
+
+| Purchase Group | Customers | Mean Revenue | Mean Contribution Margin |
+| -------------- | --------: | -----------: | -----------------------: |
+| 1 purchase     |    28,551 |       $64.68 |                   $52.10 |
+| 2 purchases    |     8,308 |      $129.21 |                  $104.58 |
+| 3+ purchases   |     2,343 |      $203.66 |                  $165.03 |
+
+This confirms that customer value emerges from actual purchasing behavior rather than being directly imposed.
+
+---
+
+## 7. Economic Validation
+
+The generated transaction economics were validated after the USD scale revision.
+
+| Metric                                | Result  |
+| ------------------------------------- | ------- |
+| Total transactions                    | 54,507  |
+| Completed transactions                | 52,664  |
+| Cancelled transactions                | 1,843   |
+| Cancellation rate                     | 3.38%   |
+| Mean AOV                              | $64.51  |
+| Median AOV                            | $57.59  |
+| P25 AOV                               | $42.47  |
+| P75 AOV                               | $78.39  |
+| P95 AOV                               | $125.19 |
+| Mean discount rate                    | 9.16%   |
+| Mean subsidy rate                     | 10.11%  |
+| Mean contribution margin              | $52.09  |
+| Contribution-margin rate              | 80.74%  |
+| Negative contribution-margin bookings | 0.00%   |
+| Mean customer revenue                 | $86.66  |
+| Mean customer contribution margin     | $69.97  |
+
+The resulting AOV distribution is consistent with the intended USD-denominated hotel-booking economics.
+
+---
+
+## 8. Area-Level Economic Variation
+
+Area-level economics were checked to ensure that transaction value was not identical across geographic units.
+
+The resulting area-level AOV distribution was:
+
+```
+`Minimum AOV: $41.50
+Maximum AOV: $114.48
+Mean AOV: $64.81
+Standard deviation: $17.08
+`
+```
+
+This confirms that area-level AOV tendencies create meaningful variation while remaining within a plausible overall range.
+
+---
+
+## 9. Persistent Characteristic Validation
+
+The economic and behavioral mechanisms were validated against the hidden customer characteristics.
+
+| Metric                                   | Result |
+| ---------------------------------------- | ------ |
+| AOV tendency → realized AOV              | 0.735  |
+| Purchase propensity → purchase frequency | 0.328  |
+| Repeat tendency → repeat purchases       | 0.128  |
+| Repeat tendency → actual repeat gap      | -0.126 |
+| Price sensitivity → discount rate        | 0.175  |
+| Price sensitivity → subsidy rate         | 0.183  |
+
+These relationships are not expected to be deterministic.
+
+The objective is for each persistent characteristic to influence the behavior it is intended to represent while allowing other customer, area, marketing, seasonal, and stochastic factors to affect the final outcome.
+
+---
+
+## 10. Repeat Behavior Validation
+
+Repeat customer rates were compared across quartiles of `repeat_purchase_tendency`.
+
+| Tendency Quartile | Customers | Repeat Customer Rate |
+| ----------------- | --------: | -------------------: |
+| Q1                |    30,410 |                7.41% |
+| Q2                |    30,409 |                8.11% |
+| Q3                |    30,409 |                9.02% |
+| Q4                |    30,409 |               10.49% |
+
+Higher repeat tendency produces a higher repeat-customer rate.
+
+Among repeat customers, the correlation between repeat tendency and number of repeat purchases was:
+
+```
+`0.128`
+```
+
+Actual repeat-purchase gaps were also validated.
+
+| Tendency Quartile | Mean Repeat Gap | Median Repeat Gap |
+| ----------------- | --------------: | ----------------: |
+| Q1                |      175.3 days |        163.0 days |
+| Q2                |      174.1 days |        160.0 days |
+| Q3                |      162.5 days |        144.0 days |
+| Q4                |      151.5 days |        131.5 days |
+
+The correlation between repeat tendency and actual repeat gap was:
+
+```
+`-0.126`
+```
+
+Higher repeat tendency is therefore associated with both a higher likelihood of repeat purchasing and shorter intervals between purchases.
+
+---
+
+## 11. Price Sensitivity Validation
+
+The original validation of `price_sensitivity` against customer contribution margin was not considered an appropriate mechanism test.
+
+Contribution margin is affected by several factors, including:
+
+* AOV
+* Purchase frequency
+* Discount
+* Subsidy
+
+Therefore, customer contribution margin is not expected to have a strong direct relationship with price sensitivity.
+
+The mechanism was instead validated against the economic inputs directly.
+
+The resulting correlations were:
+
+```
+`Price sensitivity → discount rate: 0.175
+
+Price sensitivity → subsidy rate: 0.183
+`
+```
+
+Both relationships are positive and consistent with the intended simulation mechanism.
+
+---
+
+## 12. Cancellation Economics
+
+Cancelled transactions remain in the transaction table as transaction events but do not contribute realized revenue or promotional costs.
+
+Validation produced:
+
+```
+`Cancelled revenue: $0.00
+Cancelled discount: $0.00
+Cancelled subsidy: $0.00
+Cancelled contribution margin: $0.00
+`
+```
+
+The cancellation rate was:
+
+```
+`3.38%`
+```
+
+This keeps cancelled transactions available for operational analysis while preventing cancelled bookings from contributing to realized customer economics.
+
+---
+
+## 13. First vs Repeat Purchase Economics
+
+First and repeat purchases were compared to determine whether the revised lifecycle created unrealistic differences in transaction value.
+
+| Metric              | First Purchase | Repeat Purchase |
+| ------------------- | -------------: | --------------: |
+| AOV                 |         $64.61 |          $64.23 |
+| Contribution Margin |         $52.23 |          $51.66 |
+
+The results are close.
+
+This is considered acceptable because the current simulation is designed for repeat behavior to primarily influence purchase frequency and timing rather than impose a separate AOV regime for repeat customers.
+
+Customer value therefore grows primarily through additional completed purchases rather than artificially increasing the value of each repeat transaction.
+
+---
+
+## 14. Day 4 Decisions
+
+The following decisions were finalized during this stage:
+
+* Transaction economics are denominated in USD.
+* AOV is generated from persistent customer and area tendencies with transaction-level variation.
+* Discount and subsidy are transaction-level economic inputs.
+* Price sensitivity influences both discount and subsidy rates.
+* Contribution margin is derived as `revenue - subsidy - discount`.
+* Contribution margin is not stored as a raw transaction field.
+* Marketing spend remains separate from transaction-level contribution margin.
+* Customer value emerges from completed transaction history.
+* Repeat purchase tendency influences repeat-purchase probability.
+* Repeat purchase tendency influences repeat-purchase timing.
+* First and repeat purchases do not require materially different AOV distributions.
+* Cancellation economics remain separate from realized customer economics.
+* Persistent customer characteristics are validated against the behavior they are intended to influence.
+* Economic mechanisms are considered sufficiently realistic for downstream development.
+
+---
+
+## 15. What Was Actually Completed
+
+Customer economics and purchasing behavior were implemented and validated as the next component of the synthetic business simulator.
+
+The following were completed:
+
+* USD-denominated transaction economics
+* Customer and area AOV tendencies
+* Transaction-level AOV variation
+* Discount generation
+* Subsidy generation
+* Price-sensitivity mechanism
+* Contribution-margin derivation
+* Customer-level economic aggregation
+* Repeat-purchase probability mechanism
+* Repeat-purchase timing mechanism
+* Customer-value validation
+* Area-level economic validation
+* Cancellation economics validation
+* First versus repeat purchase validation
+* Persistent-characteristic validation
+
+---
+
+## 16. Day 4 Conclusion
+
+Customer economics and purchasing behavior have been implemented and validated as a coherent extension of the customer lifecycle.
+
+The resulting system produces plausible USD-denominated booking economics while maintaining meaningful customer-level and area-level variation.
+
+The key validated dependency is:
+
+```
+`Persistent customer characteristics
+            ↓
+    Purchase behavior
+            ↓
+    Transaction economics
+            ↓
+    Customer value
+            ↓
+    Contribution margin
+`
+```
+
+The economic mechanisms are considered sufficiently robust and are locked for the current simulation stage.
+
+Further changes to the economic generation mechanism are not required at this stage.
+
+The next stage will extend the synthetic business into the marketing response system.
