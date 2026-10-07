@@ -1914,65 +1914,18 @@ def generate_marketing_touchpoints(
 
     return marketing_touchpoints
 
-
-if __name__ == "__main__":
-
-    # ---------------------------------------------------------
-    # 1. Generate source data and simulation state
-    # ---------------------------------------------------------
-
-    areas, area_characteristics = generate_areas()
-
-    campaign_configuration = generate_campaign_configuration(
-        area_characteristics
-    )
-
-    festival_campaign_configuration = (
-        generate_festival_campaign_configuration(
-            area_characteristics
-        )
-    )
-
-    experiment_assignment = generate_experiment_assignment(
-        area_characteristics
-    )
-
-    marketing_performance = generate_marketing_performance(
-        campaign_configuration,
-        festival_campaign_configuration,
-        area_characteristics,
-        experiment_assignment,
-    )
-
-    validate_marketing_performance(
-        marketing_performance,
-        experiment_assignment,
-    )
-
-    (
-        customers,
-        hidden_customer_characteristics,
-        channel_responsiveness,
-    ) = generate_customers(
-        area_characteristics,
-        marketing_performance,
-    )
-
-    transactions = generate_transactions(
-        customers,
-        hidden_customer_characteristics,
-        channel_responsiveness,
-        area_characteristics,
-        marketing_performance,
-    )
-
-    marketing_touchpoints = generate_marketing_touchpoints(
-        customers,
-        hidden_customer_characteristics,
-        channel_responsiveness,
-        marketing_performance,
-    )
-
+def validate_day_1(
+    area_characteristics,
+    experiment_assignment,
+    customers,
+    hidden_customer_characteristics,
+    marketing_performance,
+    transactions,
+):
+    
+    print("\n" + "=" * 70)
+    print("DAY 1 - CUSTOMER LIFECYCLE")
+    print("=" * 70) 
     # ---------------------------------------------------------
     # 2. Validate experiment assignment
     # ---------------------------------------------------------
@@ -2717,9 +2670,15 @@ if __name__ == "__main__":
         "\nAll customer lifecycle consistency checks passed."
     )
 
+def validate_day_2(
+    customers,
+    hidden_customer_characteristics,
+    transactions,
+):
     # ============================================================
     # DAY 2 - CUSTOMER ECONOMICS AUDIT
     # ============================================================
+
 
     economic_audit = transactions.copy()
 
@@ -3412,3 +3371,1493 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
 
     print("\nAll current validations passed.")
+
+def validate_day_3(
+    area_characteristics,
+    experiment_assignment,
+    customers,
+    hidden_customer_characteristics,
+    channel_responsiveness,
+    marketing_performance,
+    transactions,
+):
+    # ============================================================
+    # DAY 3 - MARKETING RESPONSE SYSTEM
+    # ============================================================
+
+    # ------------------------------------------------------------
+    # 1. Marketing pressure diagnostic
+    # ------------------------------------------------------------
+
+    marketing_by_area = marketing_performance.copy()
+
+    marketing_by_area["area_id"] = (
+        marketing_by_area["campaign_name"]
+        .str.extract(r"(AREA_\d{3})$")
+    )
+
+    assert marketing_by_area["area_id"].notna().all()
+
+    daily_area_clicks = (
+        marketing_by_area
+        .groupby(
+            ["date", "area_id", "channel"],
+            as_index=False,
+        )["clicks"]
+        .sum()
+    )
+
+    daily_area_clicks = (
+        daily_area_clicks
+        .pivot_table(
+            index=["date", "area_id"],
+            columns="channel",
+            values="clicks",
+            fill_value=0,
+        )
+        .reset_index()
+    )
+
+    for channel in ELIGIBLE_CHANNELS:
+        if channel not in daily_area_clicks.columns:
+            daily_area_clicks[channel] = 0
+
+    area_customer_counts = (
+        customers
+        .groupby("area_id")["customer_id"]
+        .count()
+        .to_dict()
+    )
+
+    daily_area_clicks["customer_count"] = (
+        daily_area_clicks["area_id"]
+        .map(area_customer_counts)
+    )
+
+    assert daily_area_clicks["customer_count"].notna().all()
+    assert (daily_area_clicks["customer_count"] > 0).all()
+
+    for channel in ELIGIBLE_CHANNELS:
+        daily_area_clicks[f"{channel}_pressure"] = (
+            daily_area_clicks[channel]
+            / daily_area_clicks["customer_count"]
+        )
+
+    # ------------------------------------------------------------
+    # Pressure integrity
+    # ------------------------------------------------------------
+
+    pressure_columns = [
+        f"{channel}_pressure"
+        for channel in ELIGIBLE_CHANNELS
+    ]
+
+    assert daily_area_clicks[pressure_columns].notna().all().all()
+    assert (
+        daily_area_clicks[pressure_columns] >= 0
+    ).all().all()
+
+    print("\n" + "=" * 60)
+    print("DAY 3 - MARKETING RESPONSE SYSTEM")
+    print("=" * 60)
+
+    print("\n1. Marketing pressure")
+    print("-" * 60)
+
+    print("\nPressure summary by channel:")
+
+    pressure_summary = (
+        daily_area_clicks[pressure_columns]
+        .describe()
+        .T[
+            ["mean", "50%", "std", "min", "max"]
+        ]
+    )
+
+    pressure_summary = pressure_summary.rename(
+        columns={"50%": "median"}
+    )
+
+    print(
+        pressure_summary.round(4)
+    )
+
+    # ------------------------------------------------------------
+    # Clicks -> pressure relationship
+    # ------------------------------------------------------------
+
+    click_pressure_checks = []
+
+    for channel in ELIGIBLE_CHANNELS:
+
+        correlation = (
+            daily_area_clicks[
+                [channel, f"{channel}_pressure"]
+            ]
+            .corr()
+            .loc[channel, f"{channel}_pressure"]
+        )
+
+        click_pressure_checks.append(
+            {
+                "channel": channel,
+                "clicks_pressure_correlation": correlation,
+            }
+        )
+
+    click_pressure_summary = pd.DataFrame(
+        click_pressure_checks
+    )
+
+    print("\nClicks -> pressure correlation:")
+
+    print(
+        click_pressure_summary.round(4)
+    )
+
+    # ------------------------------------------------------------
+    # Experiment-period treatment vs control pressure
+    # ------------------------------------------------------------
+
+    experiment_pressure = daily_area_clicks[
+        daily_area_clicks["date"].between(
+            EXPERIMENT_START,
+            EXPERIMENT_END,
+        )
+    ].merge(
+        experiment_assignment[
+            ["area_id", "experiment_group"]
+        ],
+        on="area_id",
+        how="left",
+        validate="many_to_one",
+    )
+
+    assert experiment_pressure[
+        "experiment_group"
+    ].notna().all()
+
+    pressure_by_group = (
+        experiment_pressure
+        .groupby("experiment_group")[
+            pressure_columns
+        ]
+        .mean()
+    )
+
+    print("\nExperiment-period pressure by group:")
+
+    print(
+        pressure_by_group.round(4)
+    )
+
+    for channel in ELIGIBLE_CHANNELS:
+
+        treatment_pressure = pressure_by_group.loc[
+            "treatment",
+            f"{channel}_pressure",
+        ]
+
+        control_pressure = pressure_by_group.loc[
+            "control",
+            f"{channel}_pressure",
+        ]
+
+        ratio = (
+            treatment_pressure
+            / control_pressure
+        )
+
+        print(
+            f"\n{channel}: "
+            f"Treatment / Control pressure ratio = "
+            f"{ratio:.4f}"
+        )
+
+        assert treatment_pressure > control_pressure
+
+    print(
+        "\nMarketing pressure validation passed."
+    )
+
+    # ------------------------------------------------------------
+    # 2. Channel responsiveness
+    # ------------------------------------------------------------
+
+    print("\n2. Channel responsiveness")
+    print("-" * 60)
+
+    # Use experiment-period average pressure by area.
+    # This avoids creating a large customer x day table while
+    # preserving the same pressure mechanism used by
+    # generate_transactions().
+
+    experiment_area_pressure = (
+        experiment_pressure
+        .groupby("area_id")[pressure_columns]
+        .mean()
+        .reset_index()
+    )
+
+    # Attach each customer's hidden channel responsiveness
+    # and their area's experiment-period average pressure.
+    customer_response_data = (
+        customers[
+            ["customer_id", "area_id"]
+        ]
+        .merge(
+            channel_responsiveness[
+                ["customer_id"] + ELIGIBLE_CHANNELS
+            ],
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            experiment_area_pressure,
+            on="area_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    assert len(customer_response_data) == len(customers)
+
+    assert (
+        customer_response_data[ELIGIBLE_CHANNELS]
+        .notna()
+        .all()
+        .all()
+    )
+
+    assert (
+        customer_response_data[ELIGIBLE_CHANNELS] >= 0
+    ).all().all()
+
+    assert (
+        customer_response_data[pressure_columns]
+        .notna()
+        .all()
+        .all()
+    )
+
+    # ------------------------------------------------------------
+    # Channel-specific modeled response
+    # ------------------------------------------------------------
+
+    responsiveness_checks = []
+
+    for channel in ELIGIBLE_CHANNELS:
+
+        response_column = f"{channel}_response"
+
+        pressure_column = f"{channel}_pressure"
+
+        customer_response_data[response_column] = (
+            customer_response_data[pressure_column]
+            * customer_response_data[channel]
+        )
+
+        # Divide customers into responsiveness quintiles.
+        customer_response_data[
+            f"{channel}_responsiveness_quintile"
+        ] = pd.qcut(
+            customer_response_data[channel],
+            q=5,
+            labels=["Q1", "Q2", "Q3", "Q4", "Q5"],
+            duplicates="drop",
+        )
+
+        quintile_summary = (
+            customer_response_data
+            .groupby(
+                f"{channel}_responsiveness_quintile",
+                observed=True,
+            )[response_column]
+            .mean()
+        )
+
+        print(f"\n{channel} responsiveness:")
+
+        print(
+            quintile_summary.round(4)
+        )
+
+        responsiveness_checks.append(
+            {
+                "channel": channel,
+                "Q1": quintile_summary.iloc[0],
+                "Q5": quintile_summary.iloc[-1],
+            }
+        )
+
+        # Higher channel responsiveness must produce
+        # higher modeled channel response.
+        assert (
+            quintile_summary.iloc[-1]
+            > quintile_summary.iloc[0]
+        )
+
+    responsiveness_summary = pd.DataFrame(
+        responsiveness_checks
+    )
+
+    print("\nResponsiveness summary:")
+
+    print(
+        responsiveness_summary.round(4)
+    )
+
+    print(
+        "\nChannel responsiveness validation passed."
+    )
+
+    # ------------------------------------------------------------
+    # 3. Diminishing returns
+    # ------------------------------------------------------------
+
+    print("\n3. Diminishing returns")
+    print("-" * 60)
+
+    # The transaction generator applies a logarithmic response curve:
+    #
+    # marketing_effect =
+    #     1.0
+    #     + 0.18
+    #     * log1p(marketing_response / 0.03)
+    #     * customer_area_marketing_response
+    #
+    # Validate this mechanism directly using the same formula.
+    # A representative area-level marketing responsiveness is used
+    # so that the validation isolates the diminishing-return curve.
+
+    representative_marketing_responsiveness = (
+        area_characteristics["marketing_responsiveness"].mean()
+    )
+
+    response_grid = np.linspace(
+        0.001,
+        2.0,
+        100,
+    )
+
+    effect_grid = (
+        1.0
+        + 0.18
+        * np.log1p(
+            response_grid / 0.03
+        )
+        * representative_marketing_responsiveness
+    )
+
+    marginal_effect = np.diff(effect_grid)
+
+    # The effect must increase as marketing response increases.
+    assert np.all(
+        np.diff(effect_grid) > 0
+    )
+
+    # The incremental gain must generally decline.
+    # Because the formula is deterministic, we expect a fully
+    # monotonic decline in the marginal increments.
+    assert np.all(
+        np.diff(marginal_effect) < 0
+    )
+
+    # ------------------------------------------------------------
+    # Response quantile summary
+    # ------------------------------------------------------------
+
+    response_quantiles = np.quantile(
+        response_grid,
+        [0.20, 0.40, 0.60, 0.80, 1.00],
+    )
+
+    effect_quantiles = (
+        1.0
+        + 0.18
+        * np.log1p(
+            response_quantiles / 0.03
+        )
+        * representative_marketing_responsiveness
+    )
+
+    diminishing_returns_summary = pd.DataFrame(
+        {
+            "response": response_quantiles,
+            "marketing_effect": effect_quantiles,
+        }
+    )
+
+    diminishing_returns_summary[
+        "incremental_effect"
+    ] = (
+        diminishing_returns_summary[
+            "marketing_effect"
+        ].diff()
+    )
+
+    print(
+        "\nMarketing response -> marketing effect:"
+    )
+
+    print(
+        diminishing_returns_summary.round(4)
+    )
+
+    # The first row has no preceding point, so exclude it
+    # when checking incremental effect.
+    incremental_effect = (
+        diminishing_returns_summary[
+            "incremental_effect"
+        ].dropna()
+    )
+
+    assert (
+        incremental_effect > 0
+    ).all()
+
+    assert (
+        incremental_effect.diff().dropna() < 0
+    ).all()
+
+    print(
+        "\nDiminishing returns validation passed."
+    )
+
+    # ------------------------------------------------------------
+    # 4. Treatment response
+    # ------------------------------------------------------------
+
+    print("\n4. Treatment response")
+    print("-" * 60)
+
+    # Map each customer to their experiment group through area_id.
+    customer_experiment = (
+        customers[
+            ["customer_id", "area_id"]
+        ]
+        .merge(
+            experiment_assignment[
+                ["area_id", "experiment_group"]
+            ],
+            on="area_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    assert len(customer_experiment) == len(customers)
+
+    assert (
+        customer_experiment["experiment_group"]
+        .notna()
+        .all()
+    )
+
+    # Restrict transactions to the 28-day experiment period.
+    experiment_transactions = transactions[
+        transactions["transaction_date"].between(
+            EXPERIMENT_START,
+            EXPERIMENT_END,
+        )
+    ].copy()
+
+    # Attach experiment group to each transaction.
+    experiment_transactions = (
+        experiment_transactions
+        .merge(
+            customer_experiment[
+                ["customer_id", "experiment_group"]
+            ],
+            on="customer_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    assert (
+        experiment_transactions["experiment_group"]
+        .notna()
+        .all()
+    )
+
+    # Contribution margin is derived from the raw transaction
+    # economics. It is intentionally not stored in transactions.
+    experiment_transactions["contribution_margin"] = (
+        experiment_transactions["revenue"]
+        - experiment_transactions["subsidy"]
+        - experiment_transactions["discount"]
+    )
+
+    experiment_transactions["completed"] = (
+        ~experiment_transactions["cancelled"]
+    )
+
+    # ------------------------------------------------------------
+    # Customer-level experiment outcomes
+    # ------------------------------------------------------------
+
+    experiment_customers = (
+        customer_experiment[
+            customer_experiment["experiment_group"].isin(
+                ["treatment", "control"]
+            )
+        ]
+        .copy()
+    )
+
+    customer_outcomes = (
+        experiment_transactions
+        .groupby(
+            "customer_id",
+            as_index=False,
+        )
+        .agg(
+            transactions=(
+                "transaction_id",
+                "count",
+            ),
+            completed_transactions=(
+                "completed",
+                "sum",
+            ),
+            contribution_margin=(
+                "contribution_margin",
+                "sum",
+            ),
+        )
+    )
+
+    experiment_customers = (
+        experiment_customers
+        .merge(
+            customer_outcomes,
+            on="customer_id",
+            how="left",
+        )
+    )
+
+    for column in [
+        "transactions",
+        "completed_transactions",
+        "contribution_margin",
+    ]:
+        experiment_customers[column] = (
+            experiment_customers[column]
+            .fillna(0)
+        )
+
+    # ------------------------------------------------------------
+    # Treatment vs control outcomes
+    # ------------------------------------------------------------
+
+    treatment_response_summary = (
+        experiment_customers
+        .groupby("experiment_group")
+        .agg(
+            customers=("customer_id", "count"),
+            transactions=("transactions", "sum"),
+            completed_transactions=(
+                "completed_transactions",
+                "sum",
+            ),
+            contribution_margin=(
+                "contribution_margin",
+                "sum",
+            ),
+        )
+    )
+
+    treatment_response_summary[
+        "transactions_per_customer"
+    ] = (
+        treatment_response_summary["transactions"]
+        / treatment_response_summary["customers"]
+    )
+
+    treatment_response_summary[
+        "completed_transactions_per_customer"
+    ] = (
+        treatment_response_summary[
+            "completed_transactions"
+        ]
+        / treatment_response_summary["customers"]
+    )
+
+    treatment_response_summary[
+        "contribution_margin_per_customer"
+    ] = (
+        treatment_response_summary[
+            "contribution_margin"
+        ]
+        / treatment_response_summary["customers"]
+    )
+
+    print("\nExperiment-period outcomes by group:")
+
+    print(
+        treatment_response_summary.round(4)
+    )
+
+    # ------------------------------------------------------------
+    # Directional treatment response
+    # ------------------------------------------------------------
+
+    treatment = treatment_response_summary.loc[
+        "treatment"
+    ]
+
+    control = treatment_response_summary.loc[
+        "control"
+    ]
+
+    transaction_rate_ratio = (
+        treatment["transactions_per_customer"]
+        / control["transactions_per_customer"]
+    )
+
+    completed_rate_ratio = (
+        treatment[
+            "completed_transactions_per_customer"
+        ]
+        / control[
+            "completed_transactions_per_customer"
+        ]
+    )
+
+    contribution_margin_ratio = (
+        treatment[
+            "contribution_margin_per_customer"
+        ]
+        / control[
+            "contribution_margin_per_customer"
+        ]
+    )
+
+    print(
+        "\nTreatment / Control ratios:"
+    )
+
+    print(
+        f"Transactions per customer: "
+        f"{transaction_rate_ratio:.4f}"
+    )
+
+    print(
+        f"Completed transactions per customer: "
+        f"{completed_rate_ratio:.4f}"
+    )
+
+    print(
+        f"Contribution margin per customer: "
+        f"{contribution_margin_ratio:.4f}"
+    )
+
+    # Treatment should generate stronger observed outcomes
+    # because it receives higher marketing pressure.
+    assert (
+        treatment["transactions_per_customer"]
+        > control["transactions_per_customer"]
+    )
+
+    assert (
+        treatment[
+            "completed_transactions_per_customer"
+        ]
+        > control[
+            "completed_transactions_per_customer"
+        ]
+    )
+
+    print(
+        "\nContribution margin per customer is reported "
+        "as an economic outcome diagnostic, not a directional "
+        "mechanism assertion."
+    )
+
+    print(
+        "\nTreatment response validation passed."
+    )
+
+     # ------------------------------------------------------------
+    # 5. Treatment response diagnostic
+    # ------------------------------------------------------------
+
+    print("\n5. Treatment response diagnostic")
+    print("-" * 60)
+
+    # Entry date is stored in hidden_customer_characteristics,
+    # consistent with the customer_data construction used by
+    # generate_transactions().
+
+    customer_entry_dates = (
+        customers[
+            ["customer_id"]
+        ]
+        .merge(
+            hidden_customer_characteristics[
+                ["customer_id", "entry_date"]
+            ],
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+    )
+
+    customer_entry_dates["entry_date"] = pd.to_datetime(
+        customer_entry_dates["entry_date"]
+    )
+
+    pre_experiment_customers = (
+        customer_experiment
+        .merge(
+            customer_entry_dates,
+            on="customer_id",
+            how="left",
+            validate="one_to_one",
+        )
+    )
+
+    assert (
+        pre_experiment_customers["entry_date"]
+        .notna()
+        .all()
+    )
+
+    # Keep only customers who were already active when
+    # the experiment began.
+    pre_experiment_customers = (
+        pre_experiment_customers[
+            pre_experiment_customers["entry_date"]
+            < EXPERIMENT_START
+        ]
+        .copy()
+    )
+
+    assert len(pre_experiment_customers) > 0
+
+    # Count experiment-period outcomes for these customers.
+    pre_experiment_outcomes = (
+        experiment_transactions[
+            experiment_transactions["customer_id"].isin(
+                pre_experiment_customers["customer_id"]
+            )
+        ]
+        .groupby("customer_id", as_index=False)
+        .agg(
+            transactions=(
+                "transaction_id",
+                "count",
+            ),
+            completed_transactions=(
+                "completed",
+                "sum",
+            ),
+            contribution_margin=(
+                "contribution_margin",
+                "sum",
+            ),
+        )
+    )
+
+    pre_experiment_customers = (
+        pre_experiment_customers
+        .merge(
+            pre_experiment_outcomes,
+            on="customer_id",
+            how="left",
+        )
+    )
+
+    for column in [
+        "transactions",
+        "completed_transactions",
+        "contribution_margin",
+    ]:
+        pre_experiment_customers[column] = (
+            pre_experiment_customers[column]
+            .fillna(0)
+        )
+
+    # ------------------------------------------------------------
+    # Group-level diagnostic
+    # ------------------------------------------------------------
+
+    pre_experiment_summary = (
+        pre_experiment_customers
+        .groupby("experiment_group")
+        .agg(
+            customers=("customer_id", "count"),
+            transactions=("transactions", "sum"),
+            completed_transactions=(
+                "completed_transactions",
+                "sum",
+            ),
+            contribution_margin=(
+                "contribution_margin",
+                "sum",
+            ),
+        )
+    )
+
+    pre_experiment_summary[
+        "transactions_per_customer"
+    ] = (
+        pre_experiment_summary["transactions"]
+        / pre_experiment_summary["customers"]
+    )
+
+    pre_experiment_summary[
+        "completed_transactions_per_customer"
+    ] = (
+        pre_experiment_summary[
+            "completed_transactions"
+        ]
+        / pre_experiment_summary["customers"]
+    )
+
+    pre_experiment_summary[
+        "contribution_margin_per_customer"
+    ] = (
+        pre_experiment_summary[
+            "contribution_margin"
+        ]
+        / pre_experiment_summary["customers"]
+    )
+
+    print(
+        "\nExperiment-period outcomes among "
+        "pre-existing customers:"
+    )
+
+    print(
+        pre_experiment_summary.round(4)
+    )
+
+    treatment = pre_experiment_summary.loc[
+        "treatment"
+    ]
+
+    control = pre_experiment_summary.loc[
+        "control"
+    ]
+
+    print(
+        "\nTreatment / Control ratios:"
+    )
+
+    print(
+        f"Transactions per customer: "
+        f"{(
+            treatment["transactions_per_customer"]
+            / control["transactions_per_customer"]
+        ):.4f}"
+    )
+
+    print(
+        f"Completed transactions per customer: "
+        f"{(
+            treatment["completed_transactions_per_customer"]
+            / control["completed_transactions_per_customer"]
+        ):.4f}"
+    )
+
+    print(
+        f"Contribution margin per customer: "
+        f"{(
+            treatment["contribution_margin_per_customer"]
+            / control["contribution_margin_per_customer"]
+        ):.4f}"
+    )
+
+    print(
+        "\nPre-existing customer treatment diagnostic completed."
+    )
+
+    # ------------------------------------------------------------
+    # 6. Purchase probability diagnostic
+    # ------------------------------------------------------------
+
+    print("\n6. Purchase probability diagnostic")
+    print("-" * 60)
+
+    # Recreate the same customer-level structure used by
+    # generate_transactions().
+    customer_probability_data = (
+        customers
+        .merge(
+            hidden_customer_characteristics,
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            channel_responsiveness,
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+    )
+
+    assert len(customer_probability_data) == len(customers)
+
+    # Area-level characteristics.
+    area_lookup = (
+        area_characteristics
+        .set_index("area_id")
+        .to_dict("index")
+    )
+
+    customer_area_purchase_propensity = np.array([
+        area_lookup[area_id]["purchase_propensity"]
+        for area_id in customer_probability_data["area_id"]
+    ])
+
+    customer_area_seasonality = np.array([
+        area_lookup[area_id]["seasonality_sensitivity"]
+        for area_id in customer_probability_data["area_id"]
+    ])
+
+    customer_area_marketing_response = np.array([
+        area_lookup[area_id]["marketing_responsiveness"]
+        for area_id in customer_probability_data["area_id"]
+    ])
+
+    # ------------------------------------------------------------
+    # Use experiment-period average pressure by area
+    # ------------------------------------------------------------
+
+    experiment_area_pressure = (
+        experiment_pressure
+        .groupby("area_id")[pressure_columns]
+        .mean()
+        .reset_index()
+    )
+
+    customer_probability_data = (
+        customer_probability_data
+        .merge(
+            experiment_area_pressure,
+            on="area_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    assert (
+        customer_probability_data[pressure_columns]
+        .notna()
+        .all()
+        .all()
+    )
+
+    # ------------------------------------------------------------
+    # Reconstruct marketing response
+    # ------------------------------------------------------------
+
+    marketing_response = (
+        customer_probability_data["Google_pressure"]
+        * customer_probability_data["Google"]
+        + customer_probability_data["Meta_pressure"]
+        * customer_probability_data["Meta"]
+        + customer_probability_data["TikTok_pressure"]
+        * customer_probability_data["TikTok"]
+        + customer_probability_data["CRM_pressure"]
+        * customer_probability_data["CRM"]
+    )
+
+    # Exact marketing-effect formula from
+    # generate_transactions().
+    marketing_effect = (
+        1.0
+        + 0.18
+        * np.log1p(
+            marketing_response / 0.03
+        )
+        * customer_area_marketing_response
+    )
+
+    # July experiment seasonality.
+    seasonality = (
+        1.05
+        ** customer_area_seasonality
+    )
+
+    # First-purchase scenario so that repeat behavior does not
+    # influence this diagnostic.
+    repeat_multiplier = 1.0
+
+    # Exact base probability formula from
+    # generate_transactions().
+    base_probability = (
+        0.00075
+        * customer_probability_data[
+            "purchase_propensity"
+        ]
+        / customer_probability_data[
+            "purchase_propensity"
+        ].mean()
+    )
+
+    purchase_probability = (
+        base_probability
+        * customer_area_purchase_propensity
+        / customer_area_purchase_propensity.mean()
+        * seasonality
+        * marketing_effect
+        * repeat_multiplier
+    )
+
+    purchase_probability = np.clip(
+        purchase_probability,
+        0.0,
+        0.05,
+    )
+
+    customer_probability_data[
+        "marketing_response"
+    ] = marketing_response
+
+    customer_probability_data[
+        "marketing_effect"
+    ] = marketing_effect
+
+    customer_probability_data[
+        "purchase_probability"
+    ] = purchase_probability
+
+    # Map experiment group to each customer through area_id.
+    customer_probability_data = (
+        customer_probability_data
+        .merge(
+            experiment_assignment[
+                ["area_id", "experiment_group"]
+            ],
+            on="area_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    assert (
+        customer_probability_data["experiment_group"]
+        .notna()
+        .all()
+    )
+    # ------------------------------------------------------------
+    # Treatment vs control
+    # ------------------------------------------------------------
+
+    probability_summary = (
+        customer_probability_data
+        .groupby("experiment_group")
+        .agg(
+            marketing_response=(
+                "marketing_response",
+                "mean",
+            ),
+            marketing_effect=(
+                "marketing_effect",
+                "mean",
+            ),
+            purchase_probability=(
+                "purchase_probability",
+                "mean",
+            ),
+        )
+    )
+
+    print(
+        "\nModeled experiment-period probability components:"
+    )
+
+    print(
+        probability_summary.round(6)
+    )
+
+    treatment = probability_summary.loc[
+        "treatment"
+    ]
+
+    control = probability_summary.loc[
+        "control"
+    ]
+
+    print(
+        "\nTreatment / Control ratios:"
+    )
+
+    print(
+        f"Marketing response: "
+        f"{(
+            treatment["marketing_response"]
+            / control["marketing_response"]
+        ):.4f}"
+    )
+
+    print(
+        f"Marketing effect: "
+        f"{(
+            treatment["marketing_effect"]
+            / control["marketing_effect"]
+        ):.4f}"
+    )
+
+    print(
+        f"Purchase probability: "
+        f"{(
+            treatment["purchase_probability"]
+            / control["purchase_probability"]
+        ):.4f}"
+    )
+
+    print(
+        "\nPurchase probability diagnostic completed."
+    )
+
+    # ------------------------------------------------------------
+    # 7. Counterfactual marketing-response diagnostic
+    # ------------------------------------------------------------
+
+    print("\n7. Counterfactual marketing-response diagnostic")
+    print("-" * 60)
+
+    # Use the same customers and area characteristics.
+    # Only marketing pressure will change between scenarios.
+
+    customer_counterfactual_data = (
+        customers
+        .merge(
+            hidden_customer_characteristics,
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            channel_responsiveness,
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+    )
+
+    assert len(customer_counterfactual_data) == len(customers)
+
+    # Add area-level characteristics.
+    area_lookup = (
+        area_characteristics
+        .set_index("area_id")
+        .to_dict("index")
+    )
+
+    customer_counterfactual_data[
+        "area_purchase_propensity"
+    ] = [
+        area_lookup[area_id]["purchase_propensity"]
+        for area_id in customer_counterfactual_data["area_id"]
+    ]
+
+    customer_counterfactual_data[
+        "area_marketing_responsiveness"
+    ] = [
+        area_lookup[area_id]["marketing_responsiveness"]
+        for area_id in customer_counterfactual_data["area_id"]
+    ]
+
+    customer_counterfactual_data[
+        "area_seasonality"
+    ] = [
+        area_lookup[area_id]["seasonality_sensitivity"]
+        for area_id in customer_counterfactual_data["area_id"]
+    ]
+
+    # ------------------------------------------------------------
+    # Average experiment-period pressure by group and area
+    # ------------------------------------------------------------
+
+    pressure_by_group = (
+        experiment_pressure
+        .groupby("experiment_group")[pressure_columns]
+        .mean()
+    )
+
+    control_pressure = pressure_by_group.loc[
+        "control"
+    ]
+
+    treatment_pressure = pressure_by_group.loc[
+        "treatment"
+    ]
+
+    # ------------------------------------------------------------
+    # Scenario 1: control-level pressure
+    # ------------------------------------------------------------
+
+    control_response = (
+        control_pressure["Google_pressure"]
+        * customer_counterfactual_data["Google"]
+        + control_pressure["Meta_pressure"]
+        * customer_counterfactual_data["Meta"]
+        + control_pressure["TikTok_pressure"]
+        * customer_counterfactual_data["TikTok"]
+        + control_pressure["CRM_pressure"]
+        * customer_counterfactual_data["CRM"]
+    )
+
+    control_effect = (
+        1.0
+        + 0.18
+        * np.log1p(control_response / 0.03)
+        * customer_counterfactual_data[
+            "area_marketing_responsiveness"
+        ]
+    )
+
+    # ------------------------------------------------------------
+    # Scenario 2: treatment-level pressure
+    # ------------------------------------------------------------
+
+    treatment_response = (
+        treatment_pressure["Google_pressure"]
+        * customer_counterfactual_data["Google"]
+        + treatment_pressure["Meta_pressure"]
+        * customer_counterfactual_data["Meta"]
+        + treatment_pressure["TikTok_pressure"]
+        * customer_counterfactual_data["TikTok"]
+        + treatment_pressure["CRM_pressure"]
+        * customer_counterfactual_data["CRM"]
+    )
+
+    treatment_effect = (
+        1.0
+        + 0.18
+        * np.log1p(treatment_response / 0.03)
+        * customer_counterfactual_data[
+            "area_marketing_responsiveness"
+        ]
+    )
+
+    # ------------------------------------------------------------
+    # Hold customer and area characteristics constant
+    # ------------------------------------------------------------
+
+    base_probability = (
+        0.00075
+        * customer_counterfactual_data["purchase_propensity"]
+        / customer_counterfactual_data["purchase_propensity"].mean()
+    )
+
+    seasonality = (
+        1.05
+        ** customer_counterfactual_data[
+            "area_seasonality"
+        ]
+    )
+
+    area_purchase_factor = (
+        customer_counterfactual_data[
+            "area_purchase_propensity"
+        ]
+        / customer_counterfactual_data[
+            "area_purchase_propensity"
+        ].mean()
+    )
+
+    control_probability = (
+        base_probability
+        * area_purchase_factor
+        * seasonality
+        * control_effect
+    )
+
+    treatment_probability = (
+        base_probability
+        * area_purchase_factor
+        * seasonality
+        * treatment_effect
+    )
+
+    control_probability = np.clip(
+        control_probability,
+        0.0,
+        0.05,
+    )
+
+    treatment_probability = np.clip(
+        treatment_probability,
+        0.0,
+        0.05,
+    )
+
+    # ------------------------------------------------------------
+    # Compare identical customers under both pressures
+    # ------------------------------------------------------------
+
+    counterfactual_summary = pd.DataFrame(
+        {
+            "control": [
+                control_response.mean(),
+                control_effect.mean(),
+                control_probability.mean(),
+            ],
+            "treatment": [
+                treatment_response.mean(),
+                treatment_effect.mean(),
+                treatment_probability.mean(),
+            ],
+        },
+        index=[
+            "marketing_response",
+            "marketing_effect",
+            "purchase_probability",
+        ],
+    )
+
+    print(
+        "\nCounterfactual modeled outcomes:"
+    )
+
+    print(
+        counterfactual_summary.round(6)
+    )
+
+    print(
+        "\nTreatment / Control ratios:"
+    )
+
+    print(
+        f"Marketing response: "
+        f"{(
+            counterfactual_summary.loc[
+                "marketing_response",
+                "treatment",
+            ]
+            / counterfactual_summary.loc[
+                "marketing_response",
+                "control",
+            ]
+        ):.4f}"
+    )
+
+    print(
+        f"Marketing effect: "
+        f"{(
+            counterfactual_summary.loc[
+                "marketing_effect",
+                "treatment",
+            ]
+            / counterfactual_summary.loc[
+                "marketing_effect",
+                "control",
+            ]
+        ):.4f}"
+    )
+
+    print(
+        f"Purchase probability: "
+        f"{(
+            counterfactual_summary.loc[
+                "purchase_probability",
+                "treatment",
+            ]
+            / counterfactual_summary.loc[
+                "purchase_probability",
+                "control",
+            ]
+        ):.4f}"
+    )
+
+    print(
+        "\nCounterfactual diagnostic completed."
+    )
+
+
+if __name__ == "__main__":
+
+    # ---------------------------------------------------------
+    # 1. Generate source data and simulation state
+    # ---------------------------------------------------------
+
+    areas, area_characteristics = generate_areas()
+
+    campaign_configuration = generate_campaign_configuration(
+        area_characteristics
+    )
+
+    festival_campaign_configuration = (
+        generate_festival_campaign_configuration(
+            area_characteristics
+        )
+    )
+
+    experiment_assignment = generate_experiment_assignment(
+        area_characteristics
+    )
+
+    marketing_performance = generate_marketing_performance(
+        campaign_configuration,
+        festival_campaign_configuration,
+        area_characteristics,
+        experiment_assignment,
+    )
+
+    validate_marketing_performance(
+        marketing_performance,
+        experiment_assignment,
+    )
+
+    (
+        customers,
+        hidden_customer_characteristics,
+        channel_responsiveness,
+    ) = generate_customers(
+        area_characteristics,
+        marketing_performance,
+    )
+
+    transactions = generate_transactions(
+        customers,
+        hidden_customer_characteristics,
+        channel_responsiveness,
+        area_characteristics,
+        marketing_performance,
+    )
+
+    marketing_touchpoints = generate_marketing_touchpoints(
+        customers,
+        hidden_customer_characteristics,
+        channel_responsiveness,
+        marketing_performance,
+    )
+
+    VALIDATION_DAY = 3
+
+    if VALIDATION_DAY == 1:
+        validate_day_1(
+            area_characteristics,
+            experiment_assignment,
+            customers,
+            hidden_customer_characteristics,
+            marketing_performance,
+            transactions,
+        )
+
+    elif VALIDATION_DAY == 2:
+        validate_day_2(
+            customers,
+            hidden_customer_characteristics,
+            transactions,
+        )
+
+    elif VALIDATION_DAY == 3:
+        validate_day_3(
+            area_characteristics,
+            experiment_assignment,
+            customers,
+            hidden_customer_characteristics,
+            channel_responsiveness,
+            marketing_performance,
+            transactions,
+        )
+ 
