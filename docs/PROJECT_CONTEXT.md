@@ -4,7 +4,7 @@
 
 Project: Marketing Incrementality & Budget Allocation
 Project Type: Marketing Analytics / Incrementality / Budget Optimization
-Status: Day 2 - Customer Economics & Purchasing Behavior complete
+Status: Day 5 - Data Genration - Marketing Response System complete
 Data: Synthetic, controlled simulation
 Primary Business Outcome: Incremental Contribution Margin
 
@@ -12,7 +12,7 @@ This project develops an end-to-end marketing analytics framework for evaluating
 
 The analysis is designed to move from marketing and customer data toward a financially grounded investment decision while distinguishing reported performance from causal impact and average performance from marginal return.
 
-At the current stage, the business and measurement design, data architecture, and initial synthetic data generation have been implemented and validated. The synthetic business now contains areas, customers, marketing performance, and transactions with customer-level behavioral and economic variation.
+At the current stage, the business and measurement design, data architecture, customer lifecycle, customer economics, and marketing response system have been implemented and validated. Customer journeys, attribution, hidden simulation truth, and downstream analytical work remain to be completed.
 
 ---
 
@@ -191,7 +191,7 @@ Potential characteristics for stratification and balance checks include:
 * Average order value
 * Customer mix
 
-The exact variables used for stratification have not yet been finalized.
+The current experiment assignment has been implemented and validated using 10 treatment areas and 10 control areas.
 
 ---
 
@@ -287,7 +287,7 @@ Last-touch attribution will be used only as a comparison baseline.
 
 The attribution model will be built as a downstream analytical transformation rather than generated as source data.
 
-The source data will contain actual customer marketing interactions and transactions. Attribution logic will then determine how purchase credit is distributed across eligible touchpoints.
+The source data will contain customer marketing interactions and transactions. Attribution logic will then determine how purchase credit is distributed across eligible touchpoints.
 
 ### Touchpoint Definition
 
@@ -313,15 +313,17 @@ A 30-day window may capture older interactions that have a weaker connection to 
 
 Other attribution windows may be used later as sensitivity checks, but 14 days is the primary setting.
 
+Customer touchpoint generation has been implemented as part of the synthetic data generator. Customer journey construction and attribution validation remain downstream work.
+
 ---
 
 ## 11. Time Architecture
 
-The synthetic business will use one coherent timeline.
+The synthetic business uses one coherent timeline.
 
 ### Historical Period
 
-18 months
+January 1, 2025 to June 30, 2026
 
 Used to establish:
 
@@ -335,13 +337,13 @@ Used to establish:
 
 ### Experiment Period
 
-28 days
+July 1, 2026 to July 28, 2026
 
 Used for the geographic treatment/control experiment and Difference-in-Differences analysis.
 
 ### Post-Experiment Observation Period
 
-90 days
+July 29, 2026 to October 26, 2026
 
 Used to observe downstream customer behavior and support customer economics.
 
@@ -367,6 +369,8 @@ transactions
 `
 ```
 
+Additional hidden characteristics and simulation-truth artifacts support the generation and validation process but are not treated as primary analytical source tables.
+
 The source tables are designed to represent one coherent business process rather than independent random datasets.
 
 ---
@@ -385,7 +389,7 @@ Grain: one row per area.
 
 `area_size` is not used analytically.
 
-Baseline demand, revenue, purchase behavior, and marketing performance are not stored in this table. These characteristics will be derived from historical data.
+Baseline demand, revenue, purchase behavior, and marketing performance are not stored in this table. These characteristics are derived from historical data and area characteristics used by the simulator.
 
 ### 13.2 `experiment_assignment`
 
@@ -423,11 +427,11 @@ Area is derived from the campaign naming convention.
 Example:
 
 ```
-`BrandSearch_JKT
+`BrandSearch_AREA_001
         ↓
 campaign_name parsing
         ↓
-area_id = JKT
+area_id = AREA_001
 `
 ```
 
@@ -444,7 +448,9 @@ Grain: one row per customer.
 
 `acquisition_date` and `customer_segment` are not stored as source fields.
 
-They will be derived later from observed customer behavior.
+They are derived later from observed customer behavior.
+
+Customer entry dates and persistent behavioral characteristics are maintained separately in the simulation layer for data generation and validation.
 
 ### 13.5 `marketing_touchpoints`
 
@@ -485,6 +491,8 @@ Derived economics:
 Contribution Margin = Revenue - Subsidy - Discount
 `
 ```
+
+Contribution margin is derived during validation and analysis rather than stored as a raw transaction field.
 
 ---
 
@@ -542,7 +550,28 @@ Multi-touch Attribution
 `
 ```
 
-These paths are intentionally separated because attribution and incrementality answer different questions.
+The marketing-response mechanism follows:
+
+```
+`Marketing Spend
+  ↓
+Clicks
+  ↓
+Marketing Pressure
+  ↓
+Customer Channel Responsiveness
+  ↓
+Marketing Response
+  ↓
+Diminishing Returns
+  ↓
+Purchase Probability
+  ↓
+Transactions
+`
+```
+
+These paths are intentionally separated because attribution, incrementality, and marketing response answer different questions.
 
 ---
 
@@ -556,19 +585,19 @@ The source architecture is designed to support the following analytical layers:
 | Incrementality          | `marketing_performance` + `experiment_assignment` + `transactions` |
 | Multi-touch attribution | `marketing_touchpoints` + `transactions`                           |
 | Customer economics      | `customers` + `transactions`                                       |
-| Channel response        | Marketing activity + business outcomes                             |
-| Marginal economics      | Channel response + experiment evidence                             |
+| Channel response        | Marketing activity + customer responsiveness + business outcomes   |
+| Marginal economics      | Channel response + experiment evidence + contribution margin       |
 | Budget optimization     | Marginal economics + response curves + business constraints        |
 
-The analytical layers will be derived after the source data has been generated.
+The analytical layers will be derived after the source data and customer journey structures have been validated.
 
 ---
 
 ## 16. Synthetic World Design
 
-The synthetic data will represent one coherent OTA business and data-generating process.
+The synthetic data represents one coherent OTA business and data-generating process.
 
-The simulation is intended to contain realistic variation across areas, customers, channels, and time.
+The simulation contains structured variation across areas, customers, channels, and time.
 
 ### Area Heterogeneity
 
@@ -580,6 +609,7 @@ Areas may differ in:
 * Average order value
 * Customer mix
 * Marketing intensity
+* Marketing responsiveness
 * Seasonality
 
 `area_size` is treated as metadata and is not intended to drive the analytical models directly.
@@ -591,19 +621,21 @@ Customers may differ in:
 * Purchase propensity
 * Average order value
 * Likelihood of repeat purchase
-* Product or category preference
 * Price sensitivity
+* Channel responsiveness
 * Other characteristics that may not be directly observable
 
 ### Channel Behavior
 
-Google, Meta, TikTok, and CRM will have different underlying response characteristics.
+Google, Meta, TikTok, and CRM have different underlying response characteristics.
 
-Marketing effects will be probabilistic rather than deterministic.
+Customer-level channel responsiveness creates heterogeneous marketing response.
 
-The synthetic world will include diminishing returns so that marginal-return analysis and budget optimization are meaningful.
+Marketing effects are probabilistic rather than deterministic.
 
-The final relative performance of the channels will not be predetermined.
+Marketing response increases with marketing pressure but follows a diminishing-return function.
+
+The final relative performance of the channels is not predetermined.
 
 ### Customer Economics
 
@@ -633,6 +665,16 @@ Marketing spend remains separate from transaction-level contribution margin.
 
 Repeat purchase behavior is generated through both repeat-purchase probability and repeat-purchase timing. Higher repeat purchase tendency increases the likelihood of repeat purchasing and reduces expected time between purchases.
 
+### Marketing Response
+
+Marketing pressure is calculated from area-level channel clicks relative to the area customer population.
+
+Customer-level channel responsiveness is combined with marketing pressure to produce marketing response.
+
+Marketing response affects purchase probability through a diminishing-return marketing-effect function.
+
+The counterfactual marketing-response validation confirmed that treatment-level pressure produces higher modeled marketing response and purchase probability when customer and area characteristics are held constant.
+
 ---
 
 ## 17. Hidden Simulation Truth
@@ -660,15 +702,13 @@ They are intended for validation rather than as primary analytical inputs.
 
 The purpose is to evaluate whether the analytical methods can recover the underlying relationships with reasonable accuracy.
 
-The analytical estimates are not expected to match the hidden truth exactly because the synthetic world will include noise and realistic variation.
-
-These files have not yet been generated.
+The hidden simulation truth has not yet been generated.
 
 ---
 
 ## 18. Data Quality Design
 
-Realistic data-quality issues are planned to be introduced after the underlying synthetic business has been generated.
+Realistic data-quality issues are planned to be introduced after the underlying synthetic business and journey structures have been generated and validated.
 
 Issues discussed so far include:
 
@@ -687,7 +727,7 @@ The exact issues, rates, and implementation have not yet been finalized.
 
 The intention is to create realistic analytical problems without making the dataset artificially messy or unnecessarily complex.
 
-No data-quality issues have been implemented yet.
+No deliberate data-quality issues have been implemented yet.
 
 ---
 
@@ -759,13 +799,13 @@ The current repository structure is:
 `
 ```
 
-Implementation files will be added as the project progresses.
+Implementation files are now being developed as the project progresses.
 
 ---
 
 ## 21. Technology Stack
 
-The planned analysis uses:
+The project uses:
 
 * Python
 * pandas
@@ -778,41 +818,36 @@ The planned analysis uses:
 
 The project is intended to be reproducible and executable locally.
 
-Synthetic data generation has started using Python, pandas, and NumPy.
+Synthetic data generation has been implemented using Python, pandas, and NumPy.
+
+The generator is being developed incrementally and validated at each major stage.
 
 ---
 
 ## 22. Project Roadmap
 
-### Week 1 - Data Foundation & Measurement
+### Synthetic Data Generation
 
-* Day 1 - Business & Measurement Design [Completed]
-* Day 2 - Data Architecture [Completed]
-* Day 3 - Synthetic Data Generation [In Progress]
-* Day 4 - Realistic Data Problems
-* Day 5 - Data Validation & Cleaning
+* Day 1 - Customer Lifecycle & Business Foundation [Completed]
+* Day 2 - Customer Economics & Purchasing Behavior [Completed]
+* Day 3 - Marketing Response System [Completed]
+* Day 4 - Customer Journeys & Attribution [Next]
+* Day 5 - Hidden Simulation Truth & Full Validation [Planned]
 
-### Week 2 - Attribution & Incrementality
+### Downstream Analysis
 
-* Day 6 - Funnel Reconstruction
-* Day 7 - Attribution Analysis
-* Day 8 - Experiment Diagnostics
-* Day 9 - Incrementality Estimation
-* Day 10 - Uncertainty & Attribution Bridge
-
-### Week 3 - Customer Economics & Marginal Returns
-
-* Day 11 - Customer Cohort Economics
-* Day 12 - LTV & Acquisition Economics
-* Day 13 - Channel Response Curves
-* Day 14 - Marginal Economics
-* Day 15 - Model Validation & Sensitivity
-
-### Week 4 - Budget Allocation & Executive Decision
-
-* Day 16 - $2M Budget Optimization
-* Day 17 - Scenarios, Sensitivity & Risk
-* Day 18 - Executive Decision & Portfolio Packaging
+* Funnel Reconstruction
+* Attribution Analysis
+* Experiment Diagnostics
+* Incrementality Estimation
+* Uncertainty & Attribution Bridge
+* Customer Cohort Economics
+* LTV & Acquisition Economics
+* Channel Response Curves
+* Marginal Economics
+* Budget Optimization
+* Scenarios, Sensitivity & Risk
+* Executive Decision & Portfolio Packaging
 
 ---
 
@@ -878,19 +913,6 @@ The following were implemented and validated:
 * Cancellation handling
 * Transaction and customer state consistency validation
 
-Key generated data results at the current stage:
-
-* 121,637 customers
-* 54,507 transactions
-* 52,664 completed transactions
-* 1,843 cancelled transactions
-* 39,202 customers with completed purchases
-* 163,920 marketing-performance rows
-* 3,052,961 marketing touchpoints
-* 3.38% cancellation rate
-
-The generated data has been validated for treatment exposure, channel spend mix, customer lifecycle consistency, transaction dates, customer IDs, and experiment structure.
-
 #### Synthetic Data Generation - Day 2 - Customer Economics & Purchasing Behavior
 
 Customer economics were implemented and validated using USD-denominated transaction economics.
@@ -910,53 +932,70 @@ The following were defined and validated:
 * Area-level AOV variation
 * First versus repeat purchase economics
 
-Day 2 economic validation results:
+Day 2 economic validation confirmed:
 
-* Mean AOV: $64.51
-* Median AOV: $57.59
-* P25 AOV: $42.47
-* P75 AOV: $78.39
-* P95 AOV: $125.19
-* Mean discount rate: 9.16%
-* Mean subsidy rate: 10.11%
-* Mean contribution margin per completed booking: $52.09
-* Contribution-margin rate: 80.74%
+* Mean AOV approximately $64.51
+* Median AOV approximately $57.59
+* Mean contribution margin per completed booking approximately $52.09
+* Contribution-margin rate approximately 80.74%
 * Negative contribution-margin bookings: 0.00%
-* Mean customer revenue: $86.66
-* Mean customer contribution margin: $69.97
+* Customer-level behavioral characteristics influence intended realized behaviors while retaining stochastic variation
 
-Persistent-characteristic validation confirmed:
+#### Synthetic Data Generation - Day 3 - Marketing Response System
 
-* AOV tendency versus realized AOV: correlation 0.735
-* Purchase propensity versus purchase frequency: correlation 0.328
-* Repeat purchase tendency versus repeat customer rate: 7.4% in Q1 to 10.5% in Q4
-* Repeat purchase tendency versus repeat purchases: correlation 0.128
-* Repeat purchase tendency versus actual repeat gap: correlation -0.126
-* Price sensitivity versus discount rate: correlation 0.175
-* Price sensitivity versus subsidy rate: correlation 0.183
+The following were implemented and validated:
 
-These results indicate that the customer-level behavioral characteristics influence the intended realized behaviors while retaining stochastic variation.
+* Area-level marketing pressure
+* Treatment/control marketing-pressure differences
+* Customer-level channel responsiveness
+* Channel-specific marketing response
+* Diminishing-return marketing effect
+* Marketing-response contribution to purchase probability
+* Treatment-response diagnostics
+* Entry-timing diagnostic
+* Purchase-probability reconstruction
+* Counterfactual marketing-response validation
+
+Day 3 validation confirmed:
+
+* Treatment areas receive approximately 30% higher marketing pressure across channels
+* Higher customer channel responsiveness produces higher modeled marketing response
+* Marketing effect increases with marketing response while exhibiting diminishing returns
+* Higher treatment-level marketing pressure produces higher modeled marketing response
+* Counterfactual treatment-level pressure produces approximately 2.9% higher modeled purchase probability
+
+The counterfactual diagnostic isolates the marketing-response mechanism from customer and area composition differences.
+
+The realized experiment-period transaction uplift is not required to match the modeled effect exactly because transactions remain stochastic and customer and area characteristics introduce variation.
+
+The marketing-response mechanism is considered sufficiently credible for downstream customer journey, attribution, and incrementality analysis.
+
+No changes to `generate_transactions()` were required as a result of Day 3 validation.
 
 ### Not Yet Completed
 
 The following work has not yet been completed:
 
+* Customer journey construction
+* Journey-level validation
+* Attribution analysis
 * Hidden simulation truth generation
 * Data-quality issues injection
 * Data cleaning
 * SQL analysis
 * Funnel reconstruction
-* Attribution analysis
 * Experiment estimation
 * Customer cohort economics analysis
 * LTV analysis
-* Response curves
+* Response curves for downstream channel analysis
 * Marginal-return analysis
 * Budget optimization
 * Final $2M allocation
 * Executive recommendation
 
-The synthetic business foundation, customer lifecycle, and customer economics generation have been implemented and validated, but the remaining marketing response, customer journey, hidden truth, and analytical layers have not yet been completed.
+The synthetic business foundation, customer lifecycle, customer economics, marketing response system, and source data generation have been implemented and validated.
+
+Customer journey and attribution logic are the next generation stage before the hidden simulation truth and full validation work.
 
 ---
 
@@ -984,8 +1023,9 @@ The following decisions should be treated as fixed unless explicitly revisited:
 * Variable cost = subsidy + discount
 * Contribution margin = revenue - subsidy - discount
 * Marketing spend remains separate from transaction-level variable cost
-* Historical period: 18 months
-* Post-experiment observation period: 90 days
+* Historical period: January 1, 2025 to June 30, 2026
+* Experiment period: July 1, 2026 to July 28, 2026
+* Post-experiment observation period: July 29, 2026 to October 26, 2026
 * Six source tables defined above
 * Source data is generated as one coherent synthetic business process
 * Transaction economics are denominated in USD
@@ -993,6 +1033,10 @@ The following decisions should be treated as fixed unless explicitly revisited:
 * Customer AOV variation is generated through persistent customer and area-level tendencies
 * Repeat purchase tendency affects both repeat-purchase likelihood and repeat-purchase timing
 * Price sensitivity affects discount and subsidy rates
+* Customer-level channel responsiveness affects marketing response
+* Marketing response influences purchase probability
+* Marketing response follows a diminishing-return function
+* Marketing response is validated through counterfactual treatment-pressure comparison
 
 ---
 
@@ -1000,21 +1044,17 @@ The following decisions should be treated as fixed unless explicitly revisited:
 
 The following remain intentionally open and should be resolved during implementation rather than assumed prematurely:
 
-* Exact historical start and end dates
-* Exact experiment dates
-* Exact area identifiers and names
-* Exact stratification variables
-* Exact implementation of the 25% treatment increase at campaign level
-* Exact customer-generation and purchase-behavior parameters for later simulation components
-* Exact marketing response mechanism
-* Exact customer journey and touchpoint generation mechanism
+* Exact customer journey definition and journey-boundary rules
+* Exact customer touchpoint-generation rules
+* Exact multi-touch attribution weighting logic
 * Exact hidden simulation truth implementation
 * Exact data-quality issues and their rates
-* Exact multi-touch attribution weighting logic
-* Exact channel response-curve structure
+* Exact channel response-curve estimation methodology for downstream analysis
 * Exact customer economics and cohort rules for downstream analysis
 * Exact operational constraints for the $2M optimization
 * Method for connecting aggregate experiment evidence with channel-level marginal economics
+* Final method for translating response curves into marginal contribution-margin estimates
+* Sensitivity and uncertainty framework for the final budget allocation
 
 These are open implementation or modeling decisions, not missing results.
 

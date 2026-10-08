@@ -1690,3 +1690,369 @@ The economic mechanisms are considered sufficiently robust and are locked for th
 Further changes to the economic generation mechanism are not required at this stage.
 
 The next stage will extend the synthetic business into the marketing response system.
+
+# Day 5 - Marketing Response System
+
+Status: Completed
+Focus: Build and validate a coherent marketing response mechanism connecting marketing activity, customer-level responsiveness, diminishing returns, purchase probability, and transactions.
+
+---
+
+## Objective
+
+Extend the validated customer economics system into a marketing response system.
+
+The objective was to ensure that marketing activity affects customer purchasing behavior through a coherent mechanism rather than being independently generated from transaction outcomes.
+
+The intended dependency is:
+
+```
+`Marketing spend
+        ↓
+    Marketing clicks
+        ↓
+  Marketing pressure
+        ↓
+Channel responsiveness
+        ↓
+ Marketing response
+        ↓
+ Diminishing returns
+        ↓
+ Purchase probability
+        ↓
+   Transactions
+        ↓
+Contribution margin
+`
+```
+
+The mechanism needed to preserve customer and area heterogeneity while producing a positive but diminishing response to additional marketing pressure.
+
+---
+
+## 1. Marketing Pressure
+
+### Change
+
+Marketing performance was aggregated from campaign-level data into daily area-level channel activity.
+
+Marketing pressure was defined as:
+
+```
+`Marketing Pressure
+=
+Channel Clicks / Area Customer Count
+`
+```
+
+Area information was derived from the campaign naming convention.
+
+### Validation
+
+Experiment-period treatment and control pressure was compared by channel.
+
+| Channel | Treatment / Control Pressure |
+| ------- | ---------------------------- |
+| Google  | 1.3185                       |
+| Meta    | 1.3170                       |
+| TikTok  | 1.2962                       |
+| CRM     | 1.3012                       |
+
+Treatment areas consistently received higher marketing pressure than control areas.
+
+The increase is consistent with the defined 25% treatment spend increase while preserving the existing channel mix.
+
+### Conclusion
+
+The marketing-performance layer produces the intended difference in customer-level marketing pressure between treatment and control areas.
+
+---
+
+## 2. Channel Responsiveness
+
+### Change
+
+Customer-level channel responsiveness was connected to area-level marketing pressure.
+
+The response mechanism is:
+
+```
+`Channel pressure
+        ×
+Customer channel responsiveness
+        ↓
+Marketing response
+`
+```
+
+Customers were evaluated across responsiveness quintiles for each channel.
+
+### Validation
+
+The relationship between responsiveness and modeled marketing response was monotonic across all four channels.
+
+| Channel | Q1 Response | Q5 Response |
+| ------- | ----------- | ----------- |
+| Google  | 0.6390      | 1.4763      |
+| Meta    | 0.3103      | 0.7205      |
+| TikTok  | 0.1989      | 0.4615      |
+| CRM     | 0.0881      | 0.2041      |
+
+Higher customer responsiveness therefore produces higher marketing response.
+
+### Conclusion
+
+Customer-level channel responsiveness is functioning as an observable driver of the simulated marketing-response mechanism.
+
+---
+
+## 3. Diminishing Returns
+
+### Change
+
+The marketing-effect function used by the transaction-generation process was independently reconstructed and tested across an increasing range of marketing response.
+
+The mechanism follows:
+
+```
+`Marketing Effect
+=
+1
++
+0.18
+× log(1 + Marketing Response / 0.03)
+× Area Marketing Responsiveness
+`
+```
+
+### Validation
+
+Marketing effect increased as marketing response increased, while the incremental effect declined.
+
+| Response | Marketing Effect | Incremental Effect |
+| -------- | ---------------- | ------------------ |
+| 0.4008   | 1.4946           | —                  |
+| 0.8006   | 1.6164           | 0.1219             |
+| 1.2004   | 1.6894           | 0.0729             |
+| 1.6002   | 1.7416           | 0.0522             |
+| 2.0000   | 1.7823           | 0.0407             |
+
+### Conclusion
+
+The response function produces the intended diminishing-return behavior.
+
+This is important for the later marginal-return and budget-allocation analysis because additional marketing investment does not generate a constant incremental response.
+
+---
+
+## 4. Treatment Response
+
+### Change
+
+Experiment-period transaction outcomes were compared between treatment and control areas.
+
+Contribution margin was derived as:
+
+```
+`Contribution Margin
+=
+Revenue - Subsidy - Discount
+`
+```
+
+The primary treatment-response diagnostics focused on transactions and completed transactions rather than requiring contribution margin to move in a specific direction.
+
+### Validation
+
+Treatment and control outcomes were:
+
+| Metric                              | Control | Treatment | Treatment / Control |
+| ----------------------------------- | ------- | --------- | ------------------- |
+| Customers                           | 59,220  | 62,417    | —                   |
+| Transactions per customer           | —       | —         | 1.0017              |
+| Completed transactions per customer | —       | —         | 1.0010              |
+| Contribution margin per customer    | $1.6917 | $1.5715   | 0.9289              |
+
+Contribution margin was retained as an economic outcome diagnostic rather than a directional mechanism assertion because it is affected by AOV, discounts, subsidies, cancellations, customer composition, and stochastic purchasing behavior.
+
+### Conclusion
+
+The realized transaction uplift is modest and noisy, but this does not by itself indicate a problem with the marketing-response mechanism.
+
+---
+
+## 5. Entry Timing Diagnostic
+
+### Change
+
+The treatment-response comparison was repeated using only customers whose entry date occurred before the experiment began.
+
+This isolates the experiment-period response from differences in the number of newly acquired customers entering treatment and control areas during the experiment.
+
+### Validation
+
+The pre-existing customer population produced:
+
+| Metric                              | Control | Treatment | Treatment / Control |
+| ----------------------------------- | ------- | --------- | ------------------- |
+| Customers                           | 48,636  | 51,128    | —                   |
+| Transactions                        | 1,827   | 1,924     | —                   |
+| Completed transactions per customer | 0.0362  | 0.0363    | 1.0020              |
+| Contribution margin per customer    | $2.0235 | $1.8747   | 0.9265              |
+
+Transactions per customer remained approximately flat between treatment and control.
+
+### Conclusion
+
+Differences in customer entry timing are not the primary explanation for the weak realized treatment uplift.
+
+The analysis therefore proceeded to isolate the modeled purchase-probability mechanism directly.
+
+---
+
+## 6. Purchase Probability Diagnostic
+
+### Change
+
+The purchase-probability calculation used by the transaction-generation process was independently reconstructed.
+
+The diagnostic incorporated:
+
+* Customer purchase propensity
+* Area purchase propensity
+* Customer channel responsiveness
+* Area marketing responsiveness
+* Experiment-period marketing pressure
+* July seasonality
+* The modeled marketing-effect function
+
+A first-purchase scenario was used to isolate marketing response from repeat-purchase behavior.
+
+### Validation
+
+Actual treatment and control populations produced:
+
+| Metric               | Control  | Treatment | Treatment / Control |
+| -------------------- | -------- | --------- | ------------------- |
+| Marketing response   | 1.697843 | 2.183515  | 1.2861              |
+| Marketing effect     | 1.786628 | 1.777966  | 0.9952              |
+| Purchase probability | 0.001411 | 0.001407  | 0.9973              |
+
+Treatment areas therefore had higher modeled marketing response, but differences in customer and area characteristics largely offset the response at the purchase-probability level.
+
+### Conclusion
+
+A direct comparison of actual treatment and control populations is not sufficient to evaluate the underlying marketing mechanism because population composition affects the modeled outcome.
+
+A counterfactual comparison was therefore used as the final mechanism diagnostic.
+
+---
+
+## 7. Counterfactual Marketing Response
+
+### Change
+
+A counterfactual diagnostic was constructed using the same customers and the same customer and area characteristics under two scenarios:
+
+* Control-level marketing pressure
+* Treatment-level marketing pressure
+
+Only marketing pressure was changed.
+
+This isolates the effect of marketing pressure from treatment/control population composition.
+
+### Validation
+
+| Metric               | Control Pressure | Treatment Pressure | Treatment / Control |
+| -------------------- | ---------------- | ------------------ | ------------------- |
+| Marketing response   | 1.699475         | 2.231833           | 1.3132              |
+| Marketing effect     | 1.761743         | 1.812321           | 1.0287              |
+| Purchase probability | 0.001394         | 0.001434           | 1.0288              |
+
+Holding customer and area characteristics constant:
+
+* Treatment pressure produces 31.3% higher marketing response.
+* Diminishing returns reduce this to approximately 2.9% higher marketing effect.
+* Purchase probability is approximately 2.9% higher under treatment-level pressure.
+
+### Conclusion
+
+The counterfactual diagnostic confirms that the marketing-response mechanism operates in the intended direction.
+
+The relatively small purchase-probability effect is a direct consequence of the diminishing-return function and the other components of the purchase-probability model.
+
+---
+
+## 8. Day 5 Decisions
+
+The following decisions were finalized during this stage:
+
+* Marketing pressure is defined from area-level channel clicks relative to area customer count.
+* Treatment areas receive higher marketing pressure than control areas.
+* Customer-level channel responsiveness creates heterogeneous marketing response.
+* Marketing response increases with marketing pressure.
+* Marketing effect follows a diminishing-return function.
+* Marketing response contributes positively to purchase probability.
+* Treatment/control population composition can materially affect the observed treatment comparison.
+* Counterfactual pressure comparison is used to isolate the underlying marketing-response mechanism.
+* The realized experiment does not need to reproduce the modeled treatment effect exactly because transactions remain stochastic.
+* Contribution margin is treated as an economic outcome rather than a directional validation requirement for the marketing mechanism.
+* The marketing-response mechanism is considered sufficiently credible for downstream customer journey, attribution, and incrementality analysis.
+* No changes to `generate_transactions()` are required at this stage.
+
+---
+
+## 9. What Was Actually Completed
+
+The marketing response system was implemented and validated as the next component of the synthetic business simulator.
+
+The following were completed:
+
+* Area-level marketing pressure
+* Treatment/control pressure validation
+* Customer-level channel responsiveness
+* Channel responsiveness validation
+* Diminishing-return response function
+* Treatment-response diagnostics
+* Entry-timing diagnostic
+* Purchase-probability reconstruction
+* Counterfactual marketing-response validation
+* Marketing-response mechanism validation
+
+---
+
+## 10. Day 5 Conclusion
+
+The marketing response system has been implemented and validated as a coherent extension of the customer lifecycle and customer economics systems.
+
+The validated dependency is:
+
+```
+`Marketing spend
+        ↓
+    Marketing clicks
+        ↓
+  Marketing pressure
+        ↓
+Customer responsiveness
+        ↓
+ Marketing response
+        ↓
+ Diminishing returns
+        ↓
+ Purchase probability
+        ↓
+   Transactions
+        ↓
+Contribution margin
+`
+```
+
+The counterfactual validation confirms that higher marketing pressure produces higher modeled purchase probability when customer and area characteristics are held constant.
+
+The resulting marketing-response mechanism is considered sufficiently credible for downstream development and is locked for the current simulation stage.
+
+Further tuning of the marketing-response generation mechanism is not required at this stage.
+
+The next stage will extend the validated synthetic business into customer journeys and attribution.
