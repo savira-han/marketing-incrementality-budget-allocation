@@ -1,7 +1,18 @@
+import os
+import resource
+
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+
+# ======
+# memory check function
+# ======
+def print_memory(label):
+    memory_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    print(f"[MEMORY] {label}: {memory_mb:,.0f} MB")
 
 
 # ============================================================
@@ -4772,28 +4783,721 @@ def validate_day_3(
         "\nCounterfactual diagnostic completed."
     )
 
+# === journey and attribution validation
+def validate_touchpoint_structure(
+    marketing_touchpoints,
+    customers,
+    hidden_customer_characteristics,
+    marketing_performance,
+):
+    """Validate structural integrity of customer-level marketing touchpoints."""
 
+    print("\n" + "=" * 70)
+    print("DAY 4: TOUCHPOINT STRUCTURE VALIDATION")
+    print("=" * 70)
+
+    # --------------------------------------------------------
+    # 1. Required columns
+    # --------------------------------------------------------
+    required_columns = [
+        "touchpoint_id",
+        "customer_id",
+        "touchpoint_timestamp",
+        "channel",
+        "campaign_id",
+        "campaign_name",
+    ]
+
+    assert list(marketing_touchpoints.columns) == required_columns, (
+        "Unexpected marketing_touchpoints schema."
+    )
+
+    # --------------------------------------------------------
+    # 2. Basic integrity
+    # --------------------------------------------------------
+    assert len(marketing_touchpoints) > 0
+    assert marketing_touchpoints[required_columns].notna().all().all()
+    assert marketing_touchpoints["touchpoint_id"].is_unique
+
+    assert pd.api.types.is_datetime64_any_dtype(
+        marketing_touchpoints["touchpoint_timestamp"]
+    )
+
+    print(f"Touchpoints: {len(marketing_touchpoints):,}")
+    print(
+        f"Customers with touchpoints: "
+        f"{marketing_touchpoints['customer_id'].nunique():,}"
+    )
+
+    # --------------------------------------------------------
+    # 3. Customer referential integrity
+    # --------------------------------------------------------
+    customer_ids = set(customers["customer_id"])
+
+    assert marketing_touchpoints["customer_id"].isin(
+        customer_ids
+    ).all()
+
+    customer_area_lookup = (
+        customers
+        .set_index("customer_id")["area_id"]
+    )
+
+    tp_customer_area = marketing_touchpoints["customer_id"].map(
+        customer_area_lookup
+    )
+
+    assert tp_customer_area.notna().all()
+
+    # --------------------------------------------------------
+    # 4. Customer lifecycle timing
+    # --------------------------------------------------------
+    entry_date_lookup = (
+        hidden_customer_characteristics
+        .set_index("customer_id")["entry_date"]
+        .pipe(pd.to_datetime)
+    )
+
+    tp_entry_dates = marketing_touchpoints["customer_id"].map(
+        entry_date_lookup
+    )
+
+    tp_dates = (
+        marketing_touchpoints["touchpoint_timestamp"]
+        .dt.normalize()
+    )
+
+    assert tp_entry_dates.notna().all()
+    assert (tp_dates >= tp_entry_dates).all()
+
+    # --------------------------------------------------------
+    # 5. Marketing campaign reference
+    # --------------------------------------------------------
+    marketing_reference = marketing_performance[
+        [
+            "campaign_id",
+            "campaign_name",
+            "channel",
+            "date",
+        ]
+    ].copy()
+
+    marketing_reference["date"] = (
+        pd.to_datetime(marketing_reference["date"])
+        .dt.normalize()
+    )
+
+    # One campaign_id must have one campaign name and channel.
+    assert (
+        marketing_reference
+        .groupby("campaign_id")["campaign_name"]
+        .nunique()
+        .eq(1)
+        .all()
+    )
+
+    assert (
+        marketing_reference
+        .groupby("campaign_id")["channel"]
+        .nunique()
+        .eq(1)
+        .all()
+    )
+
+    campaign_reference = (
+        marketing_reference
+        .drop_duplicates("campaign_id")
+        .set_index("campaign_id")
+    )
+
+    # --------------------------------------------------------
+    # 6. Campaign referential integrity
+    # --------------------------------------------------------
+    tp_campaign_names = marketing_touchpoints["campaign_id"].map(
+        campaign_reference["campaign_name"]
+    )
+
+    tp_campaign_channels = marketing_touchpoints["campaign_id"].map(
+        campaign_reference["channel"]
+    )
+
+    assert tp_campaign_names.notna().all()
+    assert tp_campaign_channels.notna().all()
+
+    assert (
+        marketing_touchpoints["campaign_name"]
+        == tp_campaign_names
+    ).all()
+
+    assert (
+        marketing_touchpoints["channel"]
+        == tp_campaign_channels
+    ).all()
+
+    # --------------------------------------------------------
+    # 7. Valid channels
+    # --------------------------------------------------------
+    expected_channels = {
+        "Google",
+        "Meta",
+        "TikTok",
+        "CRM",
+    }
+
+    assert set(
+        marketing_touchpoints["channel"].unique()
+    ).issubset(expected_channels)
+
+    # --------------------------------------------------------
+    # 8. Campaign area ↔ customer area
+    # --------------------------------------------------------
+    tp_area_ids = (
+        marketing_touchpoints["campaign_name"]
+        .str.extract(
+            r"(AREA_\d{3})$",
+            expand=False,
+        )
+    )
+
+    assert tp_area_ids.notna().all()
+
+    assert (
+        tp_customer_area.to_numpy()
+        == tp_area_ids.to_numpy()
+    ).all()
+
+    # --------------------------------------------------------
+    # 9. Campaign + date must exist in marketing performance
+    #
+    # Use a compact set of valid campaign-date combinations
+    # instead of merging against the full touchpoint table.
+    # --------------------------------------------------------
+    
+    valid_campaign_dates = set(
+        zip(
+            marketing_reference["campaign_id"],
+            marketing_reference["date"],
+        )
+    )
+
+    touchpoint_campaign_dates = zip(
+        marketing_touchpoints["campaign_id"],
+        tp_dates,
+    )
+
+    assert all(
+        key in valid_campaign_dates
+        for key in touchpoint_campaign_dates
+    )
+
+    # --------------------------------------------------------
+    # 10. Volume diagnostics
+    # --------------------------------------------------------
+    print("\nTouchpoints by channel:")
+    print(
+        marketing_touchpoints["channel"]
+        .value_counts()
+        .sort_index()
+    )
+
+    print("\nTouchpoints by area:")
+    print(
+        tp_area_ids
+        .value_counts()
+        .sort_index()
+    )
+
+    print("\nTouchpoint date range:")
+    print(f"Min: {tp_dates.min()}")
+    print(f"Max: {tp_dates.max()}")
+
+    print("\nAll touchpoint structural checks passed.")
+
+def validate_journey_behavior(
+    marketing_touchpoints,
+    customers,
+    transactions,
+    run_purchase_journey_diagnostic=False,
+):
+    """Validate journey behavior and optional purchase attribution readiness.
+ 
+    Eligibility rule: a touchpoint is eligible for a purchase if it falls in
+        [purchase_date - 14 days, purchase_date + 1 day)
+    i.e. the left edge is inclusive and the whole purchase day is included,
+    but the following day is not.
+    """
+ 
+    ATTRIBUTION_WINDOW_DAYS = 14
+    JOURNEY_INACTIVITY_DAYS = 30
+    window = pd.Timedelta(days=ATTRIBUTION_WINDOW_DAYS)
+    one_day = pd.Timedelta(days=1)
+ 
+    print("\n" + "=" * 70)
+    print("DAY 4: JOURNEY BEHAVIOR VALIDATION")
+    print("=" * 70)
+ 
+    # --------------------------------------------------------
+    # 1. Prepare touchpoints (only the columns we actually use)
+    # --------------------------------------------------------
+    touchpoints = marketing_touchpoints[
+        ["touchpoint_id", "customer_id", "touchpoint_timestamp", "channel"]
+    ].copy()
+ 
+    touchpoints["touchpoint_timestamp"] = pd.to_datetime(
+        touchpoints["touchpoint_timestamp"]
+    ).astype("datetime64[ns]")
+ 
+    touchpoints = touchpoints.sort_values(
+        ["customer_id", "touchpoint_timestamp"]
+    ).reset_index(drop=True)
+ 
+    n_tp = len(touchpoints)
+ 
+    # --------------------------------------------------------
+    # 2. Prepare completed purchases
+    # --------------------------------------------------------
+    purchases = transactions.loc[
+        ~transactions["cancelled"],
+        ["transaction_id", "customer_id", "transaction_date"],
+    ].copy()
+ 
+    purchases["transaction_date"] = (
+        pd.to_datetime(purchases["transaction_date"])
+        .dt.normalize()
+        .astype("datetime64[ns]")
+    )
+ 
+    purchases = purchases.sort_values(
+        ["customer_id", "transaction_date"]
+    ).reset_index(drop=True)
+ 
+    # --------------------------------------------------------
+    # 3. Derive journeys using 30-day inactivity (vectorised)
+    # --------------------------------------------------------
+    ts = touchpoints["touchpoint_timestamp"]
+ 
+    gap_days = ts.diff().dt.total_seconds() / 86_400
+ 
+    new_journey = (
+        touchpoints["customer_id"].ne(touchpoints["customer_id"].shift())
+        | gap_days.gt(JOURNEY_INACTIVITY_DAYS)
+    ).to_numpy()
+ 
+    journey_number = np.cumsum(new_journey)  # 1-based, unique across customers
+    touchpoints["journey_number"] = journey_number
+ 
+    starts = np.flatnonzero(new_journey)
+    ends = np.append(starts[1:], n_tp)
+ 
+    # --------------------------------------------------------
+    # 4. Build journey summary without groupby / lambdas
+    # --------------------------------------------------------
+    ts_np = ts.to_numpy()
+    touchpoint_count = ends - starts
+ 
+    channel_codes, _ = pd.factorize(touchpoints["channel"])
+    pairs = pd.DataFrame({"j": journey_number, "c": channel_codes})
+    pairs = pairs[pairs["c"] >= 0].drop_duplicates()
+    channel_count = np.bincount(
+        pairs["j"].to_numpy() - 1, minlength=len(starts)
+    )
+ 
+    channels = touchpoints["channel"].astype(str).tolist()
+    channel_path = [
+        " → ".join(channels[a:b]) for a, b in zip(starts, ends)
+    ]
+ 
+    journey_summary = pd.DataFrame(
+        {
+            "customer_id": touchpoints["customer_id"].to_numpy()[starts],
+            "journey_number": journey_number[starts],
+            "journey_start": ts_np[starts],
+            "journey_end": ts_np[ends - 1],
+            "touchpoint_count": touchpoint_count,
+            "channel_count": channel_count,
+            "channel_path": channel_path,
+        }
+    )
+ 
+    journey_summary["journey_duration_days"] = (
+        journey_summary["journey_end"] - journey_summary["journey_start"]
+    ).dt.total_seconds() / 86_400
+ 
+    # --------------------------------------------------------
+    # 4.1 Validate inactivity boundaries
+    # --------------------------------------------------------
+    within_gaps = gap_days.where(~new_journey)
+    maximum_gap = within_gaps.max()
+    maximum_gap = 0.0 if pd.isna(maximum_gap) else maximum_gap
+ 
+    violating_journeys = touchpoints.loc[
+        within_gaps.gt(JOURNEY_INACTIVITY_DAYS), "journey_number"
+    ].nunique()
+ 
+    print("\nJourney inactivity-boundary diagnostic:")
+    print(f"Maximum within-journey gap: {maximum_gap:.2f} days")
+    print(f"Journeys exceeding 30 days: {violating_journeys:,}")
+ 
+    assert violating_journeys == 0, (
+        "At least one journey contains a gap greater than "
+        f"{JOURNEY_INACTIVITY_DAYS} days."
+    )
+ 
+    # --------------------------------------------------------
+    # 5. Purchase eligibility window  [date - 14d, date + 1d)
+    #
+    # Touchpoints are sorted by (customer, time). We turn each
+    # touchpoint into ONE sortable number:
+    #
+    #       key = customer_code * M + seconds_since_offset
+    #
+    # M is larger than any timestamp offset, so one customer's keys
+    # can never overlap another customer's. A single searchsorted on
+    # that key then gives, for every purchase, the exact slice of that
+    # customer's eligible touchpoints:
+    #
+    #       left  = first touchpoint with time >= date - 14 days
+    #       right = first touchpoint with time >= date + 1 day
+    #
+    # Eligible rows are [left, right). Whole seconds are exact here
+    # because every boundary is a whole second (midnight based).
+    # --------------------------------------------------------
+    tp_codes, tp_unique_customers = pd.factorize(touchpoints["customer_id"])
+    tp_codes = tp_codes.astype(np.int64)
+ 
+    purchase_codes = tp_unique_customers.get_indexer(purchases["customer_id"])
+    purchase_known = purchase_codes >= 0  # customer has any touchpoints
+    purchase_codes = np.where(purchase_known, purchase_codes, 0).astype(
+        np.int64
+    )
+ 
+    tp_sec = ts_np.astype("datetime64[s]").astype(np.int64)
+    window_start_sec = (
+        (purchases["transaction_date"] - window)
+        .to_numpy()
+        .astype("datetime64[s]")
+        .astype(np.int64)
+    )
+    window_end_sec = (
+        (purchases["transaction_date"] + one_day)
+        .to_numpy()
+        .astype("datetime64[s]")
+        .astype(np.int64)
+    )
+ 
+    all_secs = np.concatenate([tp_sec, window_start_sec, window_end_sec])
+    offset = all_secs.min() if all_secs.size else 0
+    key_span = (all_secs.max() - offset + 1) if all_secs.size else 1
+ 
+    assert (len(tp_unique_customers) + 1) * key_span < 2**62, (
+        "Composite key would overflow; reduce the time span."
+    )
+ 
+    tp_key = tp_codes * key_span + (tp_sec - offset)
+    assert (np.diff(tp_key) >= 0).all(), "Touchpoint keys are not sorted."
+ 
+    left = np.searchsorted(
+        tp_key,
+        purchase_codes * key_span + (window_start_sec - offset),
+        side="left",
+    )
+    right = np.searchsorted(
+        tp_key,
+        purchase_codes * key_span + (window_end_sec - offset),
+        side="left",
+    )
+ 
+    eligible_count = np.where(purchase_known, right - left, 0)
+    purchase_has_touchpoint = eligible_count > 0
+ 
+    purchases["has_14d_touchpoint"] = purchase_has_touchpoint
+ 
+    print("\nCompleted purchase attribution-window coverage:")
+    print(f"Completed purchases: {len(purchases):,}")
+    print(
+        "With an eligible touchpoint: "
+        f"{purchase_has_touchpoint.sum():,}"
+    )
+    print(
+        "Without an eligible touchpoint: "
+        f"{(~purchase_has_touchpoint).sum():,}"
+    )
+    print(
+        "Coverage: "
+        f"{purchase_has_touchpoint.mean():.2%}"
+        if len(purchases)
+        else "Coverage: N/A"
+    )
+ 
+    # --------------------------------------------------------
+    # 6. Optional detailed purchase-to-journey mapping
+    #
+    # Uses the SAME left/right boundaries as Section 5, and checks
+    # that every expanded touchpoint belongs to the purchase's own
+    # customer.
+    # --------------------------------------------------------
+    purchase_journey_map = pd.DataFrame(
+        columns=[
+            "transaction_id",
+            "customer_id",
+            "journey_number",
+            "purchase_date",
+        ]
+    )
+ 
+    purchase_touchpoints = pd.DataFrame(
+        columns=[
+            "transaction_id",
+            "customer_id",
+            "purchase_date",
+            "touchpoint_id",
+            "journey_number",
+            "touchpoint_timestamp",
+            "days_before_purchase",
+        ]
+    )
+ 
+    if run_purchase_journey_diagnostic:
+ 
+        print("\nDetailed purchase-to-journey diagnostic:")
+ 
+        if purchase_has_touchpoint.any():
+            cov = purchases.loc[purchase_has_touchpoint].reset_index(
+                drop=True
+            )
+            cov_left = left[purchase_has_touchpoint].astype(np.int64)
+            counts = eligible_count[purchase_has_touchpoint].astype(np.int64)
+ 
+            # Expand each purchase into its eligible touchpoint rows.
+            purchase_rep = np.repeat(np.arange(len(cov)), counts)
+            offsets = np.arange(counts.sum()) - np.repeat(
+                np.cumsum(counts) - counts, counts
+            )
+            tp_idx = np.repeat(cov_left, counts) + offsets
+ 
+            tp_rows = touchpoints.iloc[tp_idx]
+            cov_rows = cov.iloc[purchase_rep]
+ 
+            assert np.array_equal(
+                tp_rows["customer_id"].to_numpy(),
+                cov_rows["customer_id"].to_numpy(),
+            ), "Expanded touchpoints include another customer's rows."
+ 
+            purchase_touchpoints = pd.DataFrame(
+                {
+                    "transaction_id": cov_rows["transaction_id"].to_numpy(),
+                    "customer_id": cov_rows["customer_id"].to_numpy(),
+                    "purchase_date": cov_rows["transaction_date"].to_numpy(),
+                    "touchpoint_id": tp_rows["touchpoint_id"].to_numpy(),
+                    "journey_number": tp_rows["journey_number"].to_numpy(),
+                    "touchpoint_timestamp": tp_rows[
+                        "touchpoint_timestamp"
+                    ].to_numpy(),
+                }
+            )
+            # Note: purchase_date is midnight, so same-day touchpoints
+            # give a small negative value (down to -1 day).
+            purchase_touchpoints["days_before_purchase"] = (
+                purchase_touchpoints["purchase_date"]
+                - purchase_touchpoints["touchpoint_timestamp"]
+            ).dt.total_seconds() / 86_400
+ 
+        if not purchase_touchpoints.empty:
+ 
+            jn = purchase_touchpoints.groupby("transaction_id")[
+                "journey_number"
+            ].agg(["min", "max"])
+            spans_multiple = jn["min"].ne(jn["max"])
+ 
+            assert not spans_multiple.any(), (
+                "Eligible touchpoints for a purchase span "
+                "multiple journeys."
+            )
+ 
+            purchase_journey_map = (
+                purchase_touchpoints[
+                    [
+                        "transaction_id",
+                        "customer_id",
+                        "journey_number",
+                        "purchase_date",
+                    ]
+                ]
+                .drop_duplicates("transaction_id")
+                .reset_index(drop=True)
+            )
+ 
+            print(
+                "Purchases with eligible touchpoints: "
+                f"{purchase_journey_map['transaction_id'].nunique():,}"
+            )
+ 
+            print(
+                "Purchases spanning multiple journeys: "
+                f"{spans_multiple.sum():,}"
+            )
+ 
+            purchases_per_journey = purchase_journey_map.groupby(
+                ["customer_id", "journey_number"]
+            )["transaction_id"].nunique()
+ 
+            print(
+                "Journeys associated with 2+ purchases: "
+                f"{(purchases_per_journey > 1).sum():,}"
+            )
+ 
+            print("\nEligible touchpoints per purchase:")
+            print(
+                purchase_touchpoints.groupby("transaction_id")
+                .size()
+                .describe()
+            )
+ 
+            print("\nAttribution touchpoint timing:")
+            print(purchase_touchpoints["days_before_purchase"].describe())
+ 
+        else:
+            print("No completed purchases have eligible touchpoints.")
+ 
+    # --------------------------------------------------------
+    # 7. Mark journeys with at least one covered purchase
+    #
+    # A purchase's journey is the journey of its last eligible
+    # touchpoint (right - 1), using the same boundaries as above.
+    # Journey numbers are unique across customers, so isin() is safe.
+    # --------------------------------------------------------
+    purchase_journey_ids = np.unique(
+        journey_number[right[purchase_has_touchpoint] - 1]
+    )
+ 
+    journey_summary["has_purchase"] = journey_summary[
+        "journey_number"
+    ].isin(purchase_journey_ids)
+ 
+    # --------------------------------------------------------
+    # 8. Journey behavior diagnostics
+    # --------------------------------------------------------
+    journey_summary["journey_type"] = np.where(
+        journey_summary["touchpoint_count"].eq(1),
+        "single_touch",
+        "multi_touch",
+    )
+ 
+    print("\nJourney behavioral diagnostics:")
+ 
+    print("\nTouchpoints per journey by outcome:")
+    print(
+        journey_summary.groupby("has_purchase")["touchpoint_count"].agg(
+            ["count", "mean", "median", "max"]
+        )
+    )
+ 
+    print("\nJourney duration by outcome:")
+    print(
+        journey_summary.groupby("has_purchase")[
+            "journey_duration_days"
+        ].agg(["count", "mean", "median", "max"])
+    )
+ 
+    print("\nJourney type by outcome:")
+    print(
+        pd.crosstab(
+            journey_summary["has_purchase"],
+            journey_summary["journey_type"],
+            normalize="index",
+        )
+    )
+ 
+    print("\nChannels per journey by outcome:")
+    print(
+        journey_summary.groupby("has_purchase")["channel_count"].agg(
+            ["mean", "median", "max"]
+        )
+    )
+ 
+    purchase_journeys = journey_summary.loc[journey_summary["has_purchase"]]
+ 
+    if not purchase_journeys.empty:
+        multi_touch_share = (
+            purchase_journeys["journey_type"].eq("multi_touch").mean()
+        )
+        print(
+            "\nMulti-touch share among purchase-associated journeys: "
+            f"{multi_touch_share:.2%}"
+        )
+ 
+    print(f"\nTotal journeys: {len(journey_summary):,}")
+ 
+    print(
+        "Customers with multiple journeys: "
+        f"{(journey_summary.groupby('customer_id').size() > 1).sum():,}"
+    )
+ 
+    print("\nJourney type counts:")
+    print(journey_summary["journey_type"].value_counts())
+ 
+    print("\nTop channel paths:")
+    print(journey_summary["channel_path"].value_counts().head(10))
+ 
+    # --------------------------------------------------------
+    # 9. Structural assertions
+    # --------------------------------------------------------
+    assert not journey_summary.empty
+    assert journey_summary["touchpoint_count"].ge(1).all()
+    assert journey_summary["journey_duration_days"].ge(0).all()
+    assert (
+        purchases["has_14d_touchpoint"].sum()
+        + (~purchases["has_14d_touchpoint"]).sum()
+        == len(purchases)
+    )
+ 
+    print("\nAll journey behavior checks passed.")
+ 
+    return {
+        "journey_summary": journey_summary,
+        "purchase_journey_map": purchase_journey_map,
+        "purchase_touchpoints": purchase_touchpoints,
+        "purchase_coverage": purchases[
+            [
+                "transaction_id",
+                "customer_id",
+                "transaction_date",
+                "has_14d_touchpoint",
+            ]
+        ],
+    }
+
+
+
+
+
+# ==== function generator ====
 if __name__ == "__main__":
 
     # ---------------------------------------------------------
     # 1. Generate source data and simulation state
     # ---------------------------------------------------------
+    print_memory("start")
 
     areas, area_characteristics = generate_areas()
+    print_memory("after areas")
 
     campaign_configuration = generate_campaign_configuration(
         area_characteristics
     )
+    print_memory("after campaign configuration")
 
     festival_campaign_configuration = (
         generate_festival_campaign_configuration(
             area_characteristics
         )
     )
+    print_memory("after festival campaign configuration")
 
     experiment_assignment = generate_experiment_assignment(
         area_characteristics
     )
+    print_memory("after experiment assignment")
 
     marketing_performance = generate_marketing_performance(
         campaign_configuration,
@@ -4801,11 +5505,7 @@ if __name__ == "__main__":
         area_characteristics,
         experiment_assignment,
     )
-
-    validate_marketing_performance(
-        marketing_performance,
-        experiment_assignment,
-    )
+    print_memory("after marketing performance")
 
     (
         customers,
@@ -4815,6 +5515,7 @@ if __name__ == "__main__":
         area_characteristics,
         marketing_performance,
     )
+    print_memory("after customers")
 
     transactions = generate_transactions(
         customers,
@@ -4823,6 +5524,7 @@ if __name__ == "__main__":
         area_characteristics,
         marketing_performance,
     )
+    print_memory("after transactions")
 
     marketing_touchpoints = generate_marketing_touchpoints(
         customers,
@@ -4830,8 +5532,14 @@ if __name__ == "__main__":
         channel_responsiveness,
         marketing_performance,
     )
+    print_memory("after marketing touchpoints")
 
-    VALIDATION_DAY = 3
+
+
+    # ==== start validation function selection 
+    # ============================================
+
+    VALIDATION_DAY = 4
 
     if VALIDATION_DAY == 1:
         validate_day_1(
@@ -4860,4 +5568,115 @@ if __name__ == "__main__":
             marketing_performance,
             transactions,
         )
- 
+
+    elif VALIDATION_DAY == 4:
+        validate_journey_behavior(
+            marketing_touchpoints,
+            customers,
+            transactions,
+            run_purchase_journey_diagnostic=True,
+        )
+
+    # === integrity check for day 4 === 
+    # journey_results = validate_journey_behavior(
+    # marketing_touchpoints=marketing_touchpoints,
+    # customers=customers,
+    # transactions=transactions,
+    # run_purchase_journey_diagnostic=True,
+    # )
+
+    # journey_map = journey_results["purchase_journey_map"].copy()
+    # purchase_touchpoints = journey_results["purchase_touchpoints"].copy()
+    # purchase_coverage = journey_results["purchase_coverage"].copy()
+
+    # # Normalize transaction dates and calculate the exact attribution window.
+    # purchase_coverage["transaction_date"] = pd.to_datetime(
+    #     purchase_coverage["transaction_date"]
+    # ).dt.normalize()
+
+    # purchase_coverage["window_start"] = (
+    #     purchase_coverage["transaction_date"] - pd.Timedelta(days=14)
+    # )
+    # purchase_coverage["window_end"] = (
+    #     purchase_coverage["transaction_date"] + pd.Timedelta(days=1)
+    # )
+
+    # covered = purchase_coverage.loc[
+    #     purchase_coverage["has_14d_touchpoint"]
+    # ].copy()
+
+    # # 1. Every covered purchase must appear in the journey map exactly once.
+    # mapping_counts = journey_map.groupby("transaction_id").size()
+
+    # missing_mappings = set(covered["transaction_id"]) - set(mapping_counts.index)
+    # duplicate_mappings = mapping_counts[mapping_counts > 1]
+
+    # print("Covered purchases:", len(covered))
+    # print("Missing mappings:", len(missing_mappings))
+    # print("Purchases mapped more than once:", len(duplicate_mappings))
+
+    # assert not missing_mappings, "Some covered purchases have no journey mapping."
+    # assert duplicate_mappings.empty, "Some purchases have multiple journey mappings."
+
+    # # 2. Every recorded touchpoint must fall inside its purchase's window.
+    # purchase_dates = covered[
+    #     ["transaction_id", "customer_id", "window_start", "window_end"]
+    # ]
+
+    # detail = purchase_touchpoints.merge(
+    #     purchase_dates,
+    #     on=["transaction_id", "customer_id"],
+    #     how="left",
+    #     validate="many_to_one",
+    # )
+
+    # detail["touchpoint_timestamp"] = pd.to_datetime(
+    #     detail["touchpoint_timestamp"]
+    # )
+
+    # outside_window = (
+    #     detail["touchpoint_timestamp"].lt(detail["window_start"])
+    #     | detail["touchpoint_timestamp"].ge(detail["window_end"])
+    # )
+
+    # print("Touchpoints outside attribution window:", int(outside_window.sum()))
+    # assert not outside_window.any(), "Some mapped touchpoints fall outside the window."
+
+    # # 3. All eligible touchpoints for a purchase must have one journey ID.
+    # journey_counts = (
+    #     detail.groupby("transaction_id")["journey_number"]
+    #     .nunique()
+    # )
+
+    # multi_journey_purchases = journey_counts[journey_counts > 1]
+
+    # print("Purchases spanning multiple journeys:", len(multi_journey_purchases))
+    # assert multi_journey_purchases.empty, (
+    #     "Some purchases have eligible touchpoints from multiple journeys."
+    # )
+
+    # # 4. The mapped journey ID must match the eligible touchpoints.
+    # # Adjust "journey_number" below if your map uses a different column name.
+    # journey_lookup = journey_map[
+    #     ["transaction_id", "journey_number"]
+    # ].drop_duplicates()
+
+    # detail_check = detail.merge(
+    #     journey_lookup,
+    #     on="transaction_id",
+    #     how="left",
+    #     suffixes=("_touchpoint", "_mapped"),
+    #     validate="many_to_one",
+    # )
+
+    # mismatches = detail_check.loc[
+    #     detail_check["journey_number_touchpoint"]
+    #     != detail_check["journey_number_mapped"]
+    # ]
+
+    # print("Touchpoints inconsistent with mapped journey:", len(mismatches))
+    # assert mismatches.empty, (
+    #     "The mapped journey does not match all eligible touchpoints."
+    # )
+
+    # print("\nAll purchase-to-journey integrity checks passed.")
