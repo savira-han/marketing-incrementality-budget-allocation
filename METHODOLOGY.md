@@ -51,11 +51,13 @@ The primary attribution approach is multi-touch attribution.
 
 Customer marketing journeys are constructed from marketing touchpoints and transactions.
 
-A touchpoint is considered eligible for attribution when it occurs within 14 days before a purchase.
+A touchpoint is considered eligible for attribution when it occurs within 14 days before a purchase, including the full purchase date. The attribution window is defined as the interval from 14 days before the purchase date up to, but not including, the following day.
 
-Last-touch attribution is retained as a comparison baseline, but it is not the primary attribution methodology.
+Customer journeys are separated when the gap between consecutive touchpoints for the same customer exceeds 30 days. Journey segmentation and the attribution window are separate rules: a journey represents a bounded consideration episode, while the attribution window determines which touchpoints are eligible for a specific purchase.
 
-Attribution is used to understand how observed purchases are distributed across customer journeys and channels.
+Completed purchases with eligible touchpoints are mapped to their corresponding customer journeys. All eligible touchpoints for a purchase must belong to the same journey.
+
+Last-touch attribution is retained as a comparison baseline, but it is not the primary attribution methodology. Attribution is used to understand how observed purchases are distributed across customer journeys and channels.
 
 It is not treated as causal evidence.
 
@@ -255,6 +257,11 @@ Before the dataset is considered analysis-ready, it must pass five validation la
    * Marketing response increases with marketing pressure
    * Marketing response exhibits diminishing returns
    * Hidden simulation truth is consistent with the mechanisms used to generate the observed data
+   * Customer journeys respect the 30-day inactivity boundary
+   * Purchase attribution windows include only eligible touchpoints
+   * Each covered purchase maps to exactly one journey, and all eligible touchpoints for that purchase belong to the mapped journey
+
+The Day 4 journey validation covered 460,294 journeys and confirmed that no journey exceeded the 30-day inactivity boundary. Of 52,664 completed purchases, 30,970 (58.81%) had at least one eligible touchpoint. The detailed integrity checks found no missing or duplicate purchase mappings, no touchpoints outside the attribution window, no purchases spanning multiple journeys, and no inconsistencies between mapped journeys and eligible touchpoints.
 
 The final dataset is considered analysis-ready only when all validation layers pass.
 

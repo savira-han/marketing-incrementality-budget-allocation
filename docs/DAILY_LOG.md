@@ -2056,3 +2056,333 @@ The resulting marketing-response mechanism is considered sufficiently credible f
 Further tuning of the marketing-response generation mechanism is not required at this stage.
 
 The next stage will extend the validated synthetic business into customer journeys and attribution.
+
+# Day 6 - Customer Journeys & Attribution
+
+Status: Completed
+
+Focus: Build and validate customer journeys from marketing touchpoints and completed purchases, then verify that purchase-to-journey mapping follows the defined attribution window and journey boundaries.
+
+---
+
+## Objective
+
+Extend the validated marketing response system into customer journey construction and attribution readiness.
+
+The objective was to organize customer touchpoints into bounded consideration episodes, define which touchpoints are eligible for attribution to a completed purchase, and verify that purchase-to-journey mapping is internally consistent.
+
+The intended dependency is:
+
+```
+Customer
+    ↓
+Marketing Touchpoints
+    ↓
+Customer Journeys
+    ↓
+Completed Purchases
+    ↓
+Attribution Eligibility
+```
+
+Journey construction and attribution eligibility are separate processes. Journey construction groups touchpoints by customer behavior, while the attribution window determines which touchpoints are eligible for a specific purchase.
+
+---
+
+## 1. Customer Journey Definition
+
+### Decision
+
+A customer journey is a bounded sequence of observable touchpoints for one customer consideration episode.
+
+A new journey begins when the gap between consecutive touchpoints for the same customer exceeds 30 days.
+
+Customers can have multiple journeys during the observation period.
+
+### Change
+
+Journey construction was implemented using chronologically ordered customer touchpoints.
+
+The implementation derives:
+
+* Journey identifiers
+* Journey start and end timestamps
+* Touchpoint count
+* Number of distinct channels
+* Channel path
+* Journey duration
+
+Journey identifiers and summaries are derived from the raw touchpoint sequence rather than stored as additional source fields.
+
+### Why
+
+A customer may return to the platform for a separate consideration episode after a period of inactivity.
+
+Treating all of a customer's touchpoints as one continuous journey would combine distinct episodes and make purchase attribution less interpretable.
+
+---
+
+## 2. Journey Inactivity-Boundary Validation
+
+Journey boundaries were validated against the 30-day inactivity rule.
+
+### Validation
+
+| Metric                           | Result     |
+| -------------------------------- | ---------- |
+| Total journeys                   | 460,294    |
+| Customers with multiple journeys | 102,861    |
+| Maximum within-journey gap       | 30.00 days |
+| Journeys exceeding 30 days       | 0          |
+
+All journeys satisfy the defined inactivity boundary.
+
+Customers with multiple journeys are expected because the same customer can return after a gap exceeding 30 days.
+
+### Conclusion
+
+The journey segmentation logic satisfies the defined inactivity rule and is considered sufficiently robust for downstream attribution analysis.
+
+---
+
+## 3. Attribution Window
+
+### Decision
+
+The primary attribution window remains 14 days and includes the full purchase date.
+
+The eligible interval is:
+
+```
+[purchase date - 14 days, purchase date + 1 day)
+```
+
+The start is inclusive, and the end is exclusive.
+
+### Why
+
+The purchase date is stored at date-level granularity, while marketing touchpoints contain timestamps.
+
+Using the purchase date at midnight as the upper boundary would incorrectly exclude touchpoints occurring later on the same date.
+
+The full-day interval ensures that same-day touchpoints remain eligible while excluding touchpoints from the following day.
+
+Journey segmentation continues to use the separate 30-day inactivity rule.
+
+---
+
+## 4. Completed Purchase Coverage
+
+Completed purchases were evaluated against the primary attribution window.
+
+### Validation
+
+| Metric                                 | Result |
+| -------------------------------------- | ------ |
+| Completed purchases                    | 52,664 |
+| Purchases with eligible touchpoints    | 30,970 |
+| Purchases without eligible touchpoints | 21,694 |
+| Attribution coverage                   | 58.81% |
+
+A completed purchase is considered covered when at least one touchpoint for the same customer falls within the attribution window.
+
+Purchases without eligible touchpoints remain valid completed purchases. They are not assigned a marketing touchpoint merely to force attribution coverage.
+
+### Conclusion
+
+The current dataset provides eligible touchpoints for 58.81% of completed purchases.
+
+This is an observed property of the generated data, not a target that the generator is required to achieve.
+
+---
+
+## 5. Purchase-to-Journey Mapping
+
+### Change
+
+A detailed purchase-to-journey mapping was generated for purchases with eligible touchpoints.
+
+The mapping connects each covered transaction to its customer journey using the eligible touchpoint records.
+
+The detailed diagnostic evaluates:
+
+* Eligible touchpoints per purchase
+* Journey identifiers associated with each purchase
+* Touchpoint timing relative to purchase
+* Journeys associated with multiple purchases
+
+### Validation
+
+| Metric                                         | Result |
+| ---------------------------------------------- | ------ |
+| Purchases with eligible touchpoints            | 30,970 |
+| Eligible touchpoints across covered purchases  | 60,420 |
+| Mean eligible touchpoints per purchase         | 1.95   |
+| Median eligible touchpoints per purchase       | 1      |
+| Maximum eligible touchpoints per purchase      | 53     |
+| Purchases spanning multiple journeys           | 0      |
+| Journeys associated with two or more purchases | 1,149  |
+
+All eligible touchpoints for each covered purchase belong to one journey.
+
+A journey may be associated with multiple completed purchases. This is valid because a customer can purchase more than once within a journey's observation period.
+
+---
+
+## 6. Attribution Touchpoint Timing
+
+The timing of eligible touchpoints was checked against the purchase date.
+
+| Metric                       | Result |
+| ---------------------------- | ------ |
+| Mean days before purchase    | 6.36   |
+| Median days before purchase  | 6.30   |
+| Minimum days before purchase | -1.00  |
+| Maximum days before purchase | 14.00  |
+
+The minimum can be negative because the attribution window includes the full purchase date. A touchpoint occurring later on the purchase date can therefore have a negative value when timing is expressed as days before purchase.
+
+The observed range is consistent with the defined 14-day attribution window and full-day purchase-date inclusion.
+
+---
+
+## 7. Journey Behavior by Purchase Association
+
+Journey characteristics were compared between journeys associated with at least one completed purchase and journeys without an associated purchase.
+
+### Touchpoints per Journey
+
+| Journey Outcome            | Journey Count | Mean Touchpoints | Median Touchpoints |
+| -------------------------- | ------------- | ---------------- | ------------------ |
+| No associated purchase     | 430,562       | 6.02             | 3                  |
+| Associated with a purchase | 29,732        | 15.57            | 8                  |
+
+### Journey Duration
+
+| Journey Outcome            | Mean Duration | Median Duration |
+| -------------------------- | ------------- | --------------- |
+| No associated purchase     | 39.33 days    | 20.41 days      |
+| Associated with a purchase | 99.80 days    | 67.25 days      |
+
+### Journey Type
+
+| Journey Outcome            | Multi-Touch Share | Single-Touch Share |
+| -------------------------- | ----------------- | ------------------ |
+| No associated purchase     | 76.19%            | 23.81%             |
+| Associated with a purchase | 93.25%            | 6.75%              |
+
+### Channels per Journey
+
+| Journey Outcome            | Mean Channels | Median Channels |
+| -------------------------- | ------------- | --------------- |
+| No associated purchase     | 2.15          | 2               |
+| Associated with a purchase | 2.89          | 3               |
+
+Purchase-associated journeys contain more touchpoints, last longer, and involve more channels on average.
+
+These are descriptive relationships rather than evidence that additional touchpoints cause purchases. Journey duration also reflects the time required to accumulate touchpoints and the rules used to associate purchases with journeys.
+
+---
+
+## 8. Purchase-to-Journey Integrity Validation
+
+The detailed mapping was independently checked against the original purchase and touchpoint records.
+
+The integrity audit evaluated:
+
+1. Whether every covered purchase has a journey mapping.
+2. Whether a covered purchase is mapped more than once.
+3. Whether every mapped touchpoint falls within the attribution window.
+4. Whether eligible touchpoints for a purchase span multiple journeys.
+5. Whether the mapped journey identifier matches the journey identifiers on the eligible touchpoints.
+
+### Validation
+
+| Integrity Check                                  | Result |
+| ------------------------------------------------ | ------ |
+| Covered purchases missing a mapping              | 0      |
+| Purchases mapped more than once                  | 0      |
+| Touchpoints outside the attribution window       | 0      |
+| Purchases spanning multiple journeys             | 0      |
+| Touchpoints inconsistent with the mapped journey | 0      |
+
+All purchase-to-journey integrity checks passed.
+
+The audit confirms that the generated mapping is consistent with the current journey segmentation and attribution-window rules for the validated dataset.
+
+It does not establish that an attributed journey caused a purchase. Attribution remains descriptive measurement rather than causal evidence.
+
+---
+
+## 9. Day 6 Decisions
+
+The following decisions were finalized during this stage:
+
+* A customer journey represents one bounded consideration episode.
+* A new journey begins when the gap between consecutive touchpoints for the same customer exceeds 30 days.
+* Customers can have multiple journeys.
+* Journey segmentation and attribution eligibility remain separate rules.
+* The primary attribution window remains 14 days.
+* The attribution window includes the full purchase date.
+* The interval is defined as `[purchase date - 14 days, purchase date + 1 day)`.
+* Only completed purchases are included in the purchase attribution diagnostic.
+* Purchases without eligible touchpoints remain valid completed purchases.
+* Each covered purchase must map to exactly one journey.
+* All eligible touchpoints for a covered purchase must belong to the same journey.
+* A journey may be associated with multiple completed purchases.
+* Journey and attribution structures are derived from source touchpoints and transactions.
+* Attribution eligibility is not treated as evidence of causal impact.
+* Journey segmentation and purchase-to-journey mapping are considered sufficiently robust for downstream development.
+
+---
+
+## 10. What Was Actually Completed
+
+Customer journey construction and purchase-to-journey validation were implemented and validated.
+
+The following were completed:
+
+* Journey segmentation using the 30-day inactivity boundary
+* Journey identifier generation
+* Journey summary generation
+* Journey behavior diagnostics
+* Purchase attribution-window coverage calculation
+* Full purchase-date inclusion in the attribution window
+* Detailed purchase-to-journey mapping
+* Eligible touchpoint timing diagnostics
+* Journey behavior comparison by purchase association
+* Purchase mapping completeness validation
+* Duplicate mapping validation
+* Attribution-window boundary validation
+* Single-journey consistency validation
+* Mapped journey identifier consistency validation
+
+All Day 6 journey behavior and purchase-to-journey integrity checks passed for the current generated dataset.
+
+---
+
+## 11. Day 6 Conclusion
+
+Customer journey construction and purchase-to-journey mapping have been implemented and validated as a coherent extension of the marketing response system.
+
+The resulting dataset contains 460,294 journeys. Of 52,664 completed purchases, 30,970 have at least one eligible touchpoint within the primary attribution window. All covered purchases map consistently to one journey, and all eligible touchpoints satisfy the defined attribution-window boundaries.
+
+The validated dependency is:
+
+```
+Customer
+    ↓
+Marketing Touchpoints
+    ↓
+30-Day Journey Segmentation
+    ↓
+Completed Purchase
+    ↓
+14-Day Attribution Eligibility
+    ↓
+Purchase-to-Journey Mapping
+```
+
+The current journey segmentation and mapping rules are locked for the current simulation stage.
+
+The next stage will focus on hidden simulation truth and full-generator validation before downstream attribution, incrementality, customer economics, and budget-allocation analysis begin.

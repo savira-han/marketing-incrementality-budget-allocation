@@ -118,11 +118,45 @@ Status: Locked
 
 ## 04 - Attribution Assumptions
 
-### Customer marketing interactions are represented by clicks
+### The primary attribution window is 14 days
 
-Reason: Clicks represent meaningful customer interactions while keeping the customer-level journey dataset manageable.
+Reason: Hotel booking decisions can involve consideration and multiple interactions, making a 7-day window potentially restrictive while a 30-day window may include stale interactions.
 
-Impact: Impressions remain in marketing performance data but are not treated as customer touchpoints for multi-touch attribution.
+Impact: Touchpoints occurring more than 14 days before a purchase are excluded from the primary attribution calculation. The window includes the full purchase date, using the interval from 14 days before the purchase date up to, but not including, the following day.
+
+Status: Locked
+
+---
+
+### Customer journeys are separated by a 30-day inactivity gap
+
+A new journey begins when the time between consecutive touchpoints for the same customer exceeds 30 days.
+
+Reason: A customer may return to the platform for a separate consideration episode, so all of a customer's touchpoints should not automatically be treated as one continuous journey.
+
+Impact: Journey segmentation is based on customer-level touchpoint timing and is independent of the 14-day attribution window. Validation confirmed that no journey exceeds the 30-day within-journey inactivity boundary.
+
+Status: Locked
+
+---
+
+### Eligible touchpoints for a purchase must belong to one journey
+
+All eligible touchpoints for a completed purchase must belong to the same customer journey.
+
+Reason: The attribution window and journey segmentation use different time rules. Their consistency must be validated before journey-level attribution is used in later analysis.
+
+Impact: Purchase-to-journey mapping is validated against the original touchpoint records, including mapping completeness, attribution-window boundaries, and journey consistency. The Day 4 integrity checks passed with no missing mappings, duplicate purchase mappings, out-of-window touchpoints, purchases spanning multiple journeys, or mismatches between mapped journeys and eligible touchpoints.
+
+Status: Locked
+
+---
+
+### Attribution is descriptive rather than causal
+
+Reason: Receiving attribution credit does not establish that the marketing interaction caused the purchase.
+
+Impact: Incrementality is evaluated separately through the geographic experiment.
 
 Status: Locked
 
