@@ -254,7 +254,6 @@ def generate_areas():
 
     return areas, area_characteristics
 
-
 def generate_campaign_configuration(area_characteristics):
     """Create campaign metadata used by the marketing simulator."""
 
@@ -699,8 +698,6 @@ def generate_marketing_performance(
         campaign_frames,
         ignore_index=True,
     )
-
-
 
 def validate_marketing_performance(
     marketing_performance,
@@ -1803,6 +1800,1596 @@ def generate_transactions(
     )
 
     return transactions
+
+def generate_true_response_curves(
+    customers,
+    hidden_customer_characteristics,
+    channel_responsiveness,
+    area_characteristics,
+    marketing_performance,
+    output_dir=SIMULATION_TRUTH_DIR,
+    n_grid_points=50,
+):
+    """
+    Generate hidden response-curve truth from the simulator's
+    existing customer-acquisition and purchase-probability formulas.
+
+    Purchase curves vary one channel's pressure at a time while
+    holding the other channels at their observed mean pressure.
+    Customer characteristics are held constant across scenarios.
+
+    Returns the generated DataFrame and saves it to CSV.
+    """
+
+    if n_grid_points < 3:
+        raise ValueError("n_grid_points must be at least 3.")
+
+    # ---------------------------------------------------------
+    # 1. Validate required inputs
+    # ---------------------------------------------------------
+
+    required_columns = {
+        "customers": {
+            "customer_id",
+            "area_id",
+        },
+        "hidden_customer_characteristics": {
+            "customer_id",
+            "purchase_propensity",
+        },
+        "channel_responsiveness": {
+            "customer_id",
+            *ELIGIBLE_CHANNELS,
+        },
+        "area_characteristics": {
+            "area_id",
+            "baseline_demand",
+            "customer_volume_potential",
+            "purchase_propensity",
+            "seasonality_sensitivity",
+            "marketing_responsiveness",
+        },
+        "marketing_performance": {
+            "date",
+            "channel",
+            "campaign_name",
+            "clicks",
+        },
+    }
+
+    inputs = {
+        "customers": customers,
+        "hidden_customer_characteristics":
+            hidden_customer_characteristics,
+        "channel_responsiveness": channel_responsiveness,
+        "area_characteristics": area_characteristics,
+        "marketing_performance": marketing_performance,
+    }
+
+    for name, required in required_columns.items():
+        missing = required - set(inputs[name].columns)
+        if missing:
+            raise ValueError(
+                f"{name} is missing required columns: "
+                f"{sorted(missing)}"
+            )
+
+    if customers["customer_id"].duplicated().any():
+        raise ValueError("customers contains duplicate customer_id values.")
+
+    if area_characteristics["area_id"].duplicated().any():
+        raise ValueError(
+            "area_characteristics contains duplicate area_id values."
+        )
+
+    # ---------------------------------------------------------
+    # 2. Aggregate clicks to area-day-channel
+    # ---------------------------------------------------------
+
+    marketing = marketing_performance[
+        ["date", "channel", "campaign_name", "clicks"]
+    ].copy()
+
+    marketing["date"] = pd.to_datetime(marketing["date"])
+    marketing["area_id"] = marketing["campaign_name"].str.extract(
+        r"(AREA_\d{3})$"
+    )
+
+    if marketing["area_id"].isna().any():
+        raise ValueError(
+            "Some marketing rows could not be mapped to an area."
+        )
+
+    daily_clicks = (
+        marketing
+        .groupby(
+            ["date", "area_id", "channel"],
+            as_index=False,
+        )["clicks"]
+        .sum()
+        .pivot(
+            index=["date", "area_id"],
+            columns="channel",
+            values="clicks",
+        )
+        .fillna(0)
+        .reset_index()
+    )
+
+    for channel in ELIGIBLE_CHANNELS:
+        if channel not in daily_clicks.columns:
+            daily_clicks[channel] = 0.0
+
+    # ---------------------------------------------------------
+    # 3. Customer-acquisition response curve
+    # ---------------------------------------------------------
+
+    area_data = area_characteristics[
+        [
+            "area_id",
+            "baseline_demand",
+            "customer_volume_potential",
+            "marketing_responsiveness",
+        ]
+    ].copy()
+
+    area_data["baseline_acquisition_rate"] = (
+        area_data["baseline_demand"]
+        * area_data["customer_volume_potential"]
+        * 4.5
+    )
+
+    total_clicks = daily_clicks[ELIGIBLE_CHANNELS].sum(axis=1)
+
+    acquisition_grid = np.linspace(
+        0.0,
+        float(total_clicks.max()),
+        n_grid_points,
+    )
+
+    records = []
+
+    for clicks in acquisition_grid:
+        area_multiplier = (
+            1.0
+            + 0.08
+            * np.log1p(clicks)
+            * area_data["marketing_responsiveness"].to_numpy()
+        )
+
+        expected_customers = (
+            area_data["baseline_acquisition_rate"].to_numpy()
+            * area_multiplier
+        )
+
+        records.append(
+            {
+                "response_mechanism": "customer_acquisition",
+                "input_metric": "total_clicks",
+                "input_value": float(clicks),
+                "channel_varied": "all",
+                "reference_scenario": "observed_area_characteristics",
+                "expected_response": float(area_multiplier.mean()),
+                "marginal_response": np.nan,
+                "expected_customers": float(expected_customers.mean()),
+                "marginal_expected_customers": np.nan,
+                "expected_purchase_probability": np.nan,
+                "marginal_purchase_probability": np.nan,
+                "formula_version": "acquisition_log_v1",
+            }
+        )
+
+    # ---------------------------------------------------------
+    # 4. Prepare a fixed customer population for purchase curves
+    # ---------------------------------------------------------
+
+    customer_data = (
+        customers
+        .merge(
+            hidden_customer_characteristics[
+                ["customer_id", "purchase_propensity"]
+            ],
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            channel_responsiveness[
+                ["customer_id", *ELIGIBLE_CHANNELS]
+            ],
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            area_characteristics[
+                [
+                    "area_id",
+                    "purchase_propensity",
+                    "seasonality_sensitivity",
+                    "marketing_responsiveness",
+                ]
+            ].rename(
+                columns={
+                    "purchase_propensity": "area_purchase_propensity",
+                    "seasonality_sensitivity": "area_seasonality",
+                    "marketing_responsiveness":
+                        "area_marketing_responsiveness",
+                }
+            ),
+            on="area_id",
+            how="inner",
+            validate="many_to_one",
+        )
+    )
+
+    if len(customer_data) != len(customers):
+        raise ValueError(
+            "Some customers could not be matched to hidden "
+            "or area characteristics."
+        )
+
+    # Use the same customer-count denominator as the transaction
+    # generator when calculating channel pressure.
+    customer_counts = (
+        customers.groupby("area_id")["customer_id"].count()
+    )
+
+    daily_clicks["customer_count"] = (
+        daily_clicks["area_id"].map(customer_counts)
+    )
+
+    if daily_clicks["customer_count"].isna().any():
+        raise ValueError(
+            "Some area-day records have no matching customers."
+        )
+
+    for channel in ELIGIBLE_CHANNELS:
+        daily_clicks[f"{channel}_pressure"] = (
+            daily_clicks[channel]
+            / daily_clicks["customer_count"]
+        )
+
+    # Mean observed pressure for each channel. These pressures
+    # remain fixed for all non-varied channels in each scenario.
+    baseline_pressures = {
+        channel: float(
+            daily_clicks[f"{channel}_pressure"].mean()
+        )
+        for channel in ELIGIBLE_CHANNELS
+    }
+
+    # July, first purchase, and non-festival conditions provide
+    # one consistent reference scenario for every curve.
+    base_probability = (
+        0.00075
+        * customer_data["purchase_propensity"].to_numpy()
+        / customer_data["purchase_propensity"].mean()
+    )
+
+    area_probability_factor = (
+        customer_data["area_purchase_propensity"].to_numpy()
+        / customer_data["area_purchase_propensity"].mean()
+    )
+
+    seasonality = (
+        1.05
+        ** customer_data["area_seasonality"].to_numpy()
+    )
+
+    fixed_probability_factor = (
+        base_probability
+        * area_probability_factor
+        * seasonality
+    )
+
+    area_marketing_responsiveness = (
+        customer_data["area_marketing_responsiveness"].to_numpy()
+    )
+
+    customer_channel_responsiveness = {
+        channel: customer_data[channel].to_numpy()
+        for channel in ELIGIBLE_CHANNELS
+    }
+
+    # ---------------------------------------------------------
+    # 5. Channel-specific purchase-response curves
+    # ---------------------------------------------------------
+
+    for varied_channel in ELIGIBLE_CHANNELS:
+        observed_pressure = daily_clicks[
+            f"{varied_channel}_pressure"
+        ].to_numpy(dtype=float)
+
+        pressure_grid = np.linspace(
+            0.0,
+            float(observed_pressure.max()),
+            n_grid_points,
+        )
+
+        for pressure in pressure_grid:
+            # Hold the other channels at their observed mean
+            # pressure and vary only the selected channel.
+            combined_response = np.zeros(
+                len(customer_data),
+                dtype=float,
+            )
+
+            for channel in ELIGIBLE_CHANNELS:
+                channel_pressure = (
+                    float(pressure)
+                    if channel == varied_channel
+                    else baseline_pressures[channel]
+                )
+
+                combined_response += (
+                    channel_pressure
+                    * customer_channel_responsiveness[channel]
+                )
+
+            marketing_effect = (
+                1.0
+                + 0.18
+                * np.log1p(combined_response / 0.03)
+                * area_marketing_responsiveness
+            )
+
+            purchase_probability = np.clip(
+                fixed_probability_factor * marketing_effect,
+                0.0,
+                0.05,
+            )
+
+            records.append(
+                {
+                    "response_mechanism": "purchase_probability",
+                    "input_metric": "channel_pressure",
+                    "input_value": float(pressure),
+                    "channel_varied": varied_channel,
+                    "reference_scenario": (
+                        "other_channels_at_observed_mean_pressure;"
+                        "july_first_purchase_non_festival"
+                    ),
+                    "expected_response": float(
+                        marketing_effect.mean()
+                    ),
+                    "marginal_response": np.nan,
+                    "expected_customers": np.nan,
+                    "marginal_expected_customers": np.nan,
+                    "expected_purchase_probability": float(
+                        purchase_probability.mean()
+                    ),
+                    "marginal_purchase_probability": np.nan,
+                    "formula_version": "purchase_log_v1",
+                }
+            )
+
+    # ---------------------------------------------------------
+    # 6. Calculate marginal changes between adjacent grid points
+    # ---------------------------------------------------------
+
+    result = pd.DataFrame(records).sort_values(
+        [
+            "response_mechanism",
+            "channel_varied",
+            "input_value",
+        ],
+        kind="stable",
+    ).reset_index(drop=True)
+
+    grouped = result.groupby(
+        ["response_mechanism", "channel_varied"],
+        sort=False,
+    )
+
+    result["marginal_response"] = grouped[
+        "expected_response"
+    ].diff()
+
+    result["marginal_expected_customers"] = grouped[
+        "expected_customers"
+    ].diff()
+
+    result["marginal_purchase_probability"] = grouped[
+        "expected_purchase_probability"
+    ].diff()
+
+    # ---------------------------------------------------------
+    # 7. Basic integrity checks and output
+    # ---------------------------------------------------------
+
+    if result.empty:
+        raise ValueError("No response-curve rows were generated.")
+
+    if result["input_value"].isna().any():
+        raise ValueError("Response curve contains missing input values.")
+
+    if not np.isfinite(
+        result["expected_response"].to_numpy(dtype=float)
+    ).all():
+        raise ValueError("Response curve contains non-finite responses.")
+
+    purchase_rows = result[
+        result["response_mechanism"] == "purchase_probability"
+    ]
+
+    if not purchase_rows[
+        "expected_purchase_probability"
+    ].between(0, 0.05).all():
+        raise ValueError(
+            "Expected purchase probabilities must be between 0 and 0.05."
+        )
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_dir / "true_response_curves.csv"
+    result.to_csv(output_path, index=False)
+
+    print(f"Saved response-curve truth: {output_path}")
+    print(f"Response-curve rows: {len(result):,}")
+    print(
+        "Acquisition curve points: "
+        f"{(result['response_mechanism'] == 'customer_acquisition').sum():,}"
+    )
+    print(
+        "Purchase curve points: "
+        f"{(result['response_mechanism'] == 'purchase_probability').sum():,}"
+    )
+
+    return result
+
+def generate_true_channel_incrementality(
+    customers,
+    hidden_customer_characteristics,
+    channel_responsiveness,
+    area_characteristics,
+    marketing_performance,
+    output_dir=SIMULATION_TRUTH_DIR,
+    spend_multiplier=TREATMENT_SPEND_MULTIPLIER,
+):
+    """
+    Estimate modeled existing-customer purchase-response incrementality
+    under a channel-wide spend increase.
+
+    The counterfactual increases spend for all campaigns in one eligible
+    channel by spend_multiplier, holding observed impression noise and
+    campaign CTR assumptions constant.
+
+    Scope limitations:
+    - Excludes marketing-driven customer acquisition effects.
+    - Excludes repeat-purchase lifecycle transitions.
+    - Does not estimate causal channel ROI.
+    - This is a modeled expected-value counterfactual, not a stochastic
+      rerun of the full marketing and transaction generators.
+    """
+
+    if spend_multiplier <= 1:
+        raise ValueError("spend_multiplier must be greater than 1.")
+
+    # --------------------------------------------------------
+    # 1. Prepare customer-level simulation characteristics
+    # --------------------------------------------------------
+    customer_data = (
+        customers
+        .merge(
+            hidden_customer_characteristics,
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            channel_responsiveness,
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            area_characteristics[
+                [
+                    "area_id",
+                    "purchase_propensity",
+                    "aov_tendency",
+                    "seasonality_sensitivity",
+                    "marketing_responsiveness",
+                ]
+            ].rename(
+                columns={
+                    "purchase_propensity": "area_purchase_propensity",
+                    "aov_tendency": "area_aov_tendency",
+                    "seasonality_sensitivity": "area_seasonality",
+                    "marketing_responsiveness": "area_marketing_response",
+                }
+            ),
+            on="area_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    if len(customer_data) != len(customers):
+        raise ValueError("Customer merge changed the customer count.")
+
+    required_customer_columns = [
+        "entry_date",
+        "purchase_propensity",
+        "aov_tendency",
+        "price_sensitivity",
+        "area_purchase_propensity",
+        "area_aov_tendency",
+        "area_seasonality",
+        "area_marketing_response",
+        *ELIGIBLE_CHANNELS,
+    ]
+
+    if customer_data[required_customer_columns].isna().any().any():
+        raise ValueError(
+            "Missing customer, area, or channel-response characteristics."
+        )
+
+    entry_dates = pd.to_datetime(
+        customer_data["entry_date"]
+    ).dt.normalize()
+
+    customer_area_ids = customer_data["area_id"].to_numpy()
+    area_ids = area_characteristics["area_id"].tolist()
+    area_index = pd.Index(area_ids)
+
+    customer_area_positions = area_index.get_indexer(
+        customer_area_ids
+    )
+
+    if (customer_area_positions < 0).any():
+        raise ValueError("A customer references an unknown area.")
+
+    # --------------------------------------------------------
+    # 2. Build expected daily clicks from the spend model
+    # --------------------------------------------------------
+    experiment_dates = pd.date_range(
+        EXPERIMENT_START,
+        EXPERIMENT_END,
+        freq="D",
+    )
+
+    experiment_marketing = marketing_performance.loc[
+        pd.to_datetime(marketing_performance["date"]).between(
+            EXPERIMENT_START,
+            EXPERIMENT_END,
+        )
+    ].copy()
+
+    experiment_marketing["date"] = pd.to_datetime(
+        experiment_marketing["date"]
+    ).dt.normalize()
+
+    experiment_marketing["area_id"] = (
+        experiment_marketing["campaign_name"]
+        .str.extract(r"(AREA_\d{3})$")
+    )
+
+    experiment_marketing["campaign_type"] = (
+        experiment_marketing["campaign_name"]
+        .str.extract(r"^[^_]+_(.+)_AREA_\d{3}$")
+    )
+
+    if (
+        experiment_marketing["area_id"].isna().any()
+        or experiment_marketing["campaign_type"].isna().any()
+    ):
+        raise ValueError(
+            "Could not extract area or campaign type from campaign names."
+        )
+
+    if experiment_marketing["campaign_type"].eq("10.10").any():
+        raise ValueError(
+            "Festival campaigns unexpectedly appear during the July experiment."
+        )
+
+    experiment_marketing["base_ctr"] = (
+        experiment_marketing["channel"].map(
+            {
+                channel: parameters["base_ctr"]
+                for channel, parameters in CHANNEL_PARAMETERS.items()
+            }
+        )
+    )
+
+    experiment_marketing["ctr_multiplier"] = (
+        experiment_marketing["campaign_type"].map(
+            {
+                campaign_type: parameters["ctr"]
+                for campaign_type, parameters
+                in CAMPAIGN_TYPE_MULTIPLIERS.items()
+            }
+        )
+    )
+
+    if experiment_marketing[
+        ["base_ctr", "ctr_multiplier"]
+    ].isna().any().any():
+        raise ValueError(
+            "Could not map channel or campaign CTR assumptions."
+        )
+
+    area_customer_counts = (
+        customers.groupby("area_id")["customer_id"].nunique()
+    )
+
+    experiment_marketing["customer_count"] = (
+        experiment_marketing["area_id"].map(area_customer_counts)
+    )
+
+    if experiment_marketing["customer_count"].isna().any():
+        raise ValueError("Marketing data contains an unknown area.")
+
+    # Match the generator's expected binomial clicks:
+    # round(impressions) * base CTR * campaign CTR multiplier.
+    experiment_marketing["baseline_expected_clicks"] = (
+        np.rint(experiment_marketing["impressions"])
+        * experiment_marketing["base_ctr"]
+        * experiment_marketing["ctr_multiplier"]
+    )
+
+    # Hold observed impression noise constant, scaling impressions
+    # with the counterfactual spend multiplier.
+    experiment_marketing["counterfactual_expected_impressions"] = (
+        experiment_marketing["impressions"] * spend_multiplier
+    )
+
+    experiment_marketing["counterfactual_expected_clicks"] = (
+        np.rint(
+            experiment_marketing["counterfactual_expected_impressions"]
+        )
+        * experiment_marketing["base_ctr"]
+        * experiment_marketing["ctr_multiplier"]
+    )
+
+    area_day_channel = (
+        experiment_marketing
+        .groupby(["date", "area_id", "channel"], as_index=False)
+        .agg(
+            spend=("spend", "sum"),
+            baseline_expected_clicks=(
+                "baseline_expected_clicks", "sum"
+            ),
+            counterfactual_expected_clicks=(
+                "counterfactual_expected_clicks", "sum"
+            ),
+        )
+    )
+
+    area_day_channel["customer_count"] = (
+        area_day_channel["area_id"].map(area_customer_counts)
+    )
+
+    area_day_channel["baseline_pressure"] = (
+        area_day_channel["baseline_expected_clicks"]
+        / area_day_channel["customer_count"]
+    )
+
+    area_day_channel["counterfactual_pressure"] = (
+        area_day_channel["counterfactual_expected_clicks"]
+        / area_day_channel["customer_count"]
+    )
+
+    # Explicitly retain zero-pressure area/channel/day combinations.
+    all_area_days = pd.MultiIndex.from_product(
+        [experiment_dates, area_ids],
+        names=["date", "area_id"],
+    )
+
+    def make_daily_pressure_matrix(value_column):
+        matrix = (
+            area_day_channel
+            .pivot(
+                index=["date", "area_id"],
+                columns="channel",
+                values=value_column,
+            )
+            .reindex(index=all_area_days, fill_value=0)
+            .reindex(columns=ELIGIBLE_CHANNELS, fill_value=0)
+            .fillna(0)
+        )
+
+        return matrix
+
+    baseline_pressure_by_day = make_daily_pressure_matrix(
+        "baseline_pressure"
+    )
+
+    counterfactual_pressure_by_day = make_daily_pressure_matrix(
+        "counterfactual_pressure"
+    )
+
+    # --------------------------------------------------------
+    # 3. Set customer-level purchase-probability components
+    # --------------------------------------------------------
+    customer_propensity = customer_data[
+        "purchase_propensity"
+    ].to_numpy(dtype=float)
+
+    area_propensity = customer_data[
+        "area_purchase_propensity"
+    ].to_numpy(dtype=float)
+
+    area_seasonality = customer_data[
+        "area_seasonality"
+    ].to_numpy(dtype=float)
+
+    area_marketing_response = customer_data[
+        "area_marketing_response"
+    ].to_numpy(dtype=float)
+
+    customer_channel_response = customer_data[
+        ELIGIBLE_CHANNELS
+    ].to_numpy(dtype=float)
+
+    mean_customer_propensity = customer_propensity.mean()
+
+    mean_area_propensity = area_characteristics[
+        "purchase_propensity"
+    ].mean()
+
+    # July's monthly multiplier is 1.05 in the transaction generator.
+    base_probability = (
+        0.00075
+        * customer_propensity
+        / mean_customer_propensity
+        * area_propensity
+        / mean_area_propensity
+        * np.power(1.05, area_seasonality)
+    )
+
+    def expected_daily_probability(
+        daily_area_pressure,
+        selected_customer_mask,
+    ):
+        """
+        Calculate probability for one day only, using that day's
+        area-specific pressure. Avoids averaging pressure before
+        applying the nonlinear response formula.
+        """
+        pressure_by_customer = daily_area_pressure[
+            customer_area_positions
+        ]
+
+        combined_response = (
+            pressure_by_customer
+            * customer_channel_response
+        ).sum(axis=1)
+
+        marketing_effect = (
+            1
+            + 0.18
+            * np.log1p(combined_response / 0.03)
+            * area_marketing_response
+        )
+
+        probability = np.clip(
+            base_probability * marketing_effect,
+            0.0,
+            0.05,
+        )
+
+        probability[~selected_customer_mask] = 0.0
+
+        return probability
+
+    # --------------------------------------------------------
+    # 4. Estimate expected contribution margin per purchase
+    # --------------------------------------------------------
+    # Use the generator's area-level normalization, not the
+    # customer-weighted mean of duplicated area characteristics.
+    mean_area_aov_tendency = area_characteristics[
+        "aov_tendency"
+    ].mean()
+
+    expected_aov = (
+        customer_data["aov_tendency"].to_numpy(dtype=float)
+        * customer_data["area_aov_tendency"].to_numpy(dtype=float)
+        / mean_area_aov_tendency
+        * np.exp(0.5 * 0.18**2)
+    )
+
+    price_sensitivity = customer_data[
+        "price_sensitivity"
+    ].to_numpy(dtype=float)
+
+    promotion_factor = 0.75 + 0.75 * price_sensitivity
+
+    # Beta(2, 25) discount and Beta(2, 22) subsidy distributions.
+    # July is outside the October festival promotion period.
+    expected_discount_rate = (2.0 / 27.0) * promotion_factor
+    expected_subsidy_rate = (2.0 / 24.0) * promotion_factor
+
+    cancellation_probability = (
+        0.025 + 0.025 * price_sensitivity
+    )
+
+    expected_cm_per_booking = (
+        expected_aov
+        * (
+            1
+            - expected_discount_rate
+            - expected_subsidy_rate
+        )
+        * (1 - cancellation_probability)
+    )
+
+    # --------------------------------------------------------
+    # 5. Compute baseline purchases once, day by day
+    # --------------------------------------------------------
+    baseline_expected_purchases = 0.0
+    baseline_expected_cm = 0.0
+
+    for simulation_date in experiment_dates:
+        selected_customer_mask = (
+            entry_dates.to_numpy() <= simulation_date.to_datetime64()
+        )
+
+        daily_pressure = (
+            baseline_pressure_by_day
+            .loc[simulation_date]
+            .reindex(area_ids)
+            .to_numpy(dtype=float)
+        )
+
+        daily_probability = expected_daily_probability(
+            daily_pressure,
+            selected_customer_mask,
+        )
+
+        baseline_expected_purchases += daily_probability.sum()
+
+        baseline_expected_cm += np.sum(
+            daily_probability * expected_cm_per_booking
+        )
+
+    # --------------------------------------------------------
+    # 6. Estimate one channel's counterfactual at a time
+    # --------------------------------------------------------
+    records = []
+
+    for channel in ELIGIBLE_CHANNELS:
+        counterfactual_expected_purchases = 0.0
+        counterfactual_expected_cm = 0.0
+
+        channel_index = ELIGIBLE_CHANNELS.index(channel)
+
+        for simulation_date in experiment_dates:
+            selected_customer_mask = (
+                entry_dates.to_numpy()
+                <= simulation_date.to_datetime64()
+            )
+
+            baseline_daily_pressure = (
+                baseline_pressure_by_day
+                .loc[simulation_date]
+                .reindex(area_ids)
+                .to_numpy(dtype=float)
+            )
+
+            counterfactual_daily_pressure = (
+                baseline_daily_pressure.copy()
+            )
+
+            channel_daily_counterfactual = (
+                counterfactual_pressure_by_day
+                .loc[simulation_date]
+                .reindex(area_ids)
+                .to_numpy(dtype=float)
+            )
+
+            # Change only the selected channel; all other channels
+            # remain at baseline pressure for this date and area.
+            counterfactual_daily_pressure[:, channel_index] = (
+                channel_daily_counterfactual[:, channel_index]
+            )
+
+            counterfactual_probability = expected_daily_probability(
+                counterfactual_daily_pressure,
+                selected_customer_mask,
+            )
+
+            counterfactual_expected_purchases += (
+                counterfactual_probability.sum()
+            )
+
+            counterfactual_expected_cm += np.sum(
+                counterfactual_probability
+                * expected_cm_per_booking
+            )
+
+        incremental_purchases = (
+            counterfactual_expected_purchases
+            - baseline_expected_purchases
+        )
+
+        incremental_cm = (
+            counterfactual_expected_cm - baseline_expected_cm
+        )
+
+        channel_spend = experiment_marketing.loc[
+            experiment_marketing["channel"] == channel,
+            "spend",
+        ].sum()
+
+        incremental_spend = (
+            channel_spend * (spend_multiplier - 1)
+        )
+
+        records.append(
+            {
+                "channel": channel,
+                "period_start": EXPERIMENT_START,
+                "period_end": EXPERIMENT_END,
+                "baseline_spend_usd": channel_spend,
+                "counterfactual_spend_usd": (
+                    channel_spend * spend_multiplier
+                ),
+                "spend_multiplier": spend_multiplier,
+                "incremental_spend_usd": incremental_spend,
+                "baseline_expected_purchases": (
+                    baseline_expected_purchases
+                ),
+                "counterfactual_expected_purchases": (
+                    counterfactual_expected_purchases
+                ),
+                "expected_incremental_purchases": (
+                    incremental_purchases
+                ),
+                "baseline_expected_contribution_margin_usd": (
+                    baseline_expected_cm
+                ),
+                "counterfactual_expected_contribution_margin_usd": (
+                    counterfactual_expected_cm
+                ),
+                "expected_incremental_contribution_margin_usd": (
+                    incremental_cm
+                ),
+                "incremental_cm_per_incremental_dollar": (
+                    incremental_cm / incremental_spend
+                    if incremental_spend > 0
+                    else np.nan
+                ),
+                "incrementality_scope": (
+                    "existing_customer_purchase_response_only"
+                ),
+                "formula_version": "channel_counterfactual_v3",
+            }
+        )
+
+    result = pd.DataFrame(records)
+
+    # --------------------------------------------------------
+    # 7. Basic output checks and persistence
+    # --------------------------------------------------------
+    numeric_columns = [
+        "baseline_spend_usd",
+        "counterfactual_spend_usd",
+        "incremental_spend_usd",
+        "baseline_expected_purchases",
+        "counterfactual_expected_purchases",
+        "expected_incremental_purchases",
+        "baseline_expected_contribution_margin_usd",
+        "counterfactual_expected_contribution_margin_usd",
+        "expected_incremental_contribution_margin_usd",
+    ]
+
+    if not np.isfinite(result[numeric_columns].to_numpy()).all():
+        raise ValueError(
+            "Channel incrementality contains non-finite values."
+        )
+
+    if (result["incremental_spend_usd"] <= 0).any():
+        raise ValueError("Incremental spend must be positive.")
+
+    if not np.allclose(
+        result["counterfactual_spend_usd"],
+        result["baseline_spend_usd"] * spend_multiplier,
+    ):
+        raise ValueError("Counterfactual spend validation failed.")
+
+    if not np.allclose(
+        result["incremental_spend_usd"],
+        result["counterfactual_spend_usd"]
+        - result["baseline_spend_usd"],
+    ):
+        raise ValueError("Incremental spend reconciliation failed.")
+
+    if not np.allclose(
+        result["expected_incremental_purchases"],
+        result["counterfactual_expected_purchases"]
+        - result["baseline_expected_purchases"],
+    ):
+        raise ValueError("Incremental purchase reconciliation failed.")
+
+    if not np.allclose(
+        result["expected_incremental_contribution_margin_usd"],
+        result["counterfactual_expected_contribution_margin_usd"]
+        - result["baseline_expected_contribution_margin_usd"],
+    ):
+        raise ValueError("Incremental contribution-margin reconciliation failed.")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_dir / "true_channel_incrementality.csv"
+    result.to_csv(output_path, index=False)
+
+    print("\n=== True Channel Incrementality ===")
+    print(
+        result[
+            [
+                "channel",
+                "expected_incremental_purchases",
+                "expected_incremental_contribution_margin_usd",
+                "incremental_cm_per_incremental_dollar",
+            ]
+        ].to_string(index=False)
+    )
+    print(f"\nSaved: {output_path}")
+
+    return result
+
+def validate_true_response_curves(
+    response_curves,
+    output_dir=SIMULATION_TRUTH_DIR,
+    tolerance=1e-8,
+):
+    """
+    Validate generated hidden response-curve truth.
+
+    Checks:
+    - Required columns and expected curves
+    - Unique, strictly increasing input values
+    - Non-decreasing response
+    - Diminishing marginal gains on equally spaced grids
+    - Non-decreasing expected customer acquisition
+    - Purchase-probability bounds
+    - Consistency between the dataframe and saved CSV
+    """
+
+    required_columns = {
+        "response_mechanism",
+        "input_metric",
+        "input_value",
+        "channel_varied",
+        "reference_scenario",
+        "expected_response",
+        "marginal_response",
+        "expected_customers",
+        "marginal_expected_customers",
+        "expected_purchase_probability",
+        "marginal_purchase_probability",
+        "formula_version",
+    }
+
+    checks = []
+
+    def record_check(name, passed, detail=""):
+        checks.append(
+            {
+                "check": name,
+                "passed": bool(passed),
+                "detail": detail,
+            }
+        )
+
+    # ---------------------------------------------------------
+    # 1. Schema and basic integrity
+    # ---------------------------------------------------------
+
+    missing_columns = required_columns - set(response_curves.columns)
+
+    record_check(
+        "required_columns",
+        not missing_columns,
+        f"Missing columns: {sorted(missing_columns)}"
+        if missing_columns else "All required columns present",
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Response-curve validation failed: missing columns "
+            f"{sorted(missing_columns)}"
+        )
+
+    record_check(
+        "non_empty_output",
+        not response_curves.empty,
+        f"{len(response_curves):,} rows",
+    )
+
+    if response_curves.empty:
+        raise ValueError("Response-curve output is empty.")
+
+    numeric_columns = [
+        "input_value",
+        "expected_response",
+        "expected_customers",
+        "expected_purchase_probability",
+    ]
+
+    numeric_ok = True
+    numeric_details = []
+
+    for column in numeric_columns:
+        values = response_curves[column].dropna().to_numpy(dtype=float)
+        if not np.isfinite(values).all():
+            numeric_ok = False
+            numeric_details.append(f"{column}: non-finite values")
+
+    record_check(
+        "finite_numeric_values",
+        numeric_ok,
+        "; ".join(numeric_details) if numeric_details
+        else "All non-null numeric values are finite",
+    )
+
+    record_check(
+        "non_negative_inputs",
+        bool((response_curves["input_value"] >= 0).all()),
+        "All input values must be non-negative",
+    )
+
+    # ---------------------------------------------------------
+    # 2. Expected curve coverage
+    # ---------------------------------------------------------
+
+    expected_curves = {
+        ("customer_acquisition", "all"),
+        ("purchase_probability", "Google"),
+        ("purchase_probability", "Meta"),
+        ("purchase_probability", "TikTok"),
+        ("purchase_probability", "CRM"),
+    }
+
+    actual_curves = set(
+        response_curves[
+            ["response_mechanism", "channel_varied"]
+        ].itertuples(index=False, name=None)
+    )
+
+    missing_curves = expected_curves - actual_curves
+    unexpected_curves = actual_curves - expected_curves
+
+    record_check(
+        "expected_curve_coverage",
+        not missing_curves and not unexpected_curves,
+        f"Missing: {sorted(missing_curves)}; "
+        f"unexpected: {sorted(unexpected_curves)}",
+    )
+
+    # ---------------------------------------------------------
+    # 3. Validate each curve
+    # ---------------------------------------------------------
+
+    curve_checks_passed = True
+
+    for (mechanism, channel), group in response_curves.groupby(
+        ["response_mechanism", "channel_varied"],
+        sort=True,
+    ):
+        label = f"{mechanism} | {channel}"
+
+        group = group.sort_values("input_value").reset_index(drop=True)
+        inputs = group["input_value"].to_numpy(dtype=float)
+        response = group["expected_response"].to_numpy(dtype=float)
+
+        enough_points = len(group) >= 3
+        record_check(
+            f"{label}:minimum_points",
+            enough_points,
+            f"{len(group)} points",
+        )
+
+        strictly_increasing = (
+            len(inputs) >= 2
+            and bool(np.all(np.diff(inputs) > 0))
+        )
+
+        record_check(
+            f"{label}:strictly_increasing_inputs",
+            strictly_increasing,
+        )
+
+        response_nondecreasing = (
+            len(response) >= 2
+            and bool(np.all(np.diff(response) >= -tolerance))
+        )
+
+        record_check(
+            f"{label}:response_nondecreasing",
+            response_nondecreasing,
+        )
+
+        # Equal-spaced grids make adjacent marginal gains comparable.
+        equal_spacing = (
+            len(inputs) >= 3
+            and bool(
+                np.allclose(
+                    np.diff(inputs),
+                    np.diff(inputs)[0],
+                    rtol=1e-6,
+                    atol=tolerance,
+                )
+            )
+        )
+
+        record_check(
+            f"{label}:equal_spacing",
+            equal_spacing,
+            "Required for the discrete diminishing-returns check",
+        )
+
+        response_gains = np.diff(response)
+        diminishing_response = (
+            len(response_gains) >= 2
+            and bool(
+                np.all(np.diff(response_gains) <= tolerance)
+            )
+        )
+
+        record_check(
+            f"{label}:diminishing_response_gains",
+            diminishing_response,
+        )
+
+        if mechanism == "customer_acquisition":
+            expected_customers = group[
+                "expected_customers"
+            ].to_numpy(dtype=float)
+
+            customers_present = bool(
+                np.isfinite(expected_customers).all()
+            )
+
+            record_check(
+                f"{label}:expected_customers_present",
+                customers_present,
+            )
+
+            if customers_present:
+                customer_gains = np.diff(expected_customers)
+
+                record_check(
+                    f"{label}:customers_nondecreasing",
+                    bool(
+                        np.all(customer_gains >= -tolerance)
+                    ),
+                )
+
+                record_check(
+                    f"{label}:diminishing_customer_gains",
+                    len(customer_gains) >= 2
+                    and bool(
+                        np.all(
+                            np.diff(customer_gains) <= tolerance
+                        )
+                    ),
+                )
+
+        elif mechanism == "purchase_probability":
+            probability = group[
+                "expected_purchase_probability"
+            ].to_numpy(dtype=float)
+
+            probability_present = bool(
+                np.isfinite(probability).all()
+            )
+
+            record_check(
+                f"{label}:probabilities_present",
+                probability_present,
+            )
+
+            if probability_present:
+                record_check(
+                    f"{label}:probability_bounds",
+                    bool(
+                        np.all(probability >= 0)
+                        and np.all(probability <= 0.05)
+                    ),
+                )
+
+                probability_gains = np.diff(probability)
+
+                record_check(
+                    f"{label}:probability_nondecreasing",
+                    bool(
+                        np.all(probability_gains >= -tolerance)
+                    ),
+                )
+
+                record_check(
+                    f"{label}:diminishing_probability_gains",
+                    len(probability_gains) >= 2
+                    and bool(
+                        np.all(
+                            np.diff(probability_gains) <= tolerance
+                        )
+                    ),
+                )
+
+    # ---------------------------------------------------------
+    # 4. Check saved CSV against the dataframe
+    # ---------------------------------------------------------
+
+    output_path = (
+        Path(output_dir) / "true_response_curves.csv"
+    )
+
+    file_exists = output_path.is_file()
+
+    record_check(
+        "saved_csv_exists",
+        file_exists,
+        str(output_path),
+    )
+
+    if file_exists:
+        saved = pd.read_csv(output_path)
+
+        same_shape = saved.shape == response_curves.shape
+
+        record_check(
+            "saved_csv_shape_matches",
+            same_shape,
+            f"DataFrame: {response_curves.shape}; "
+            f"CSV: {saved.shape}",
+        )
+
+        if same_shape:
+            # Compare values after serialization, allowing normal
+            # floating-point CSV precision differences.
+            try:
+                pd.testing.assert_frame_equal(
+                    saved.reset_index(drop=True),
+                    response_curves.reset_index(drop=True),
+                    check_dtype=False,
+                    check_exact=False,
+                    rtol=1e-9,
+                    atol=tolerance,
+                )
+                saved_matches = True
+                saved_detail = "CSV matches the supplied dataframe"
+            except AssertionError as exc:
+                saved_matches = False
+                saved_detail = str(exc).splitlines()[0]
+
+            record_check(
+                "saved_csv_matches_dataframe",
+                saved_matches,
+                saved_detail,
+            )
+
+    # ---------------------------------------------------------
+    # 5. Report results
+    # ---------------------------------------------------------
+
+    report = pd.DataFrame(checks)
+    failed = report.loc[~report["passed"]]
+
+    print("\n=== Response-Curve Truth Validation ===")
+    print(f"Checks passed: {report['passed'].sum()}/{len(report)}")
+
+    if not failed.empty:
+        print("\nFailed checks:")
+        print(
+            failed[["check", "detail"]].to_string(index=False)
+        )
+        raise ValueError(
+            f"Response-curve validation failed: "
+            f"{len(failed)} check(s) did not pass."
+        )
+
+    print("Result: ALL CHECKS PASSED")
+
+    return report
+
+
+def validate_true_channel_incrementality():
+    """Validate the saved channel-level incrementality truth artifact."""
+    artifact_path = SIMULATION_TRUTH_DIR / "true_channel_incrementality.csv"
+    expected_channels = {"Google", "Meta", "TikTok", "CRM"}
+    expected_spend_multiplier = 1.25
+    tolerance = 1e-6
+
+    checks = []
+
+    def record_check(name, condition, detail=""):
+        passed = bool(condition)
+        checks.append((name, passed, detail))
+        status = "PASS" if passed else "FAIL"
+        suffix = f" | {detail}" if detail else ""
+        print(f"[{status}] {name}{suffix}")
+
+    print("\n=== True Channel Incrementality Validation ===")
+
+    # 1. Artifact exists and can be read.
+    record_check("Artifact exists", artifact_path.exists(), str(artifact_path))
+    if not artifact_path.exists():
+        print("Result: FAILED")
+        return False
+
+    try:
+        data = pd.read_csv(artifact_path)
+    except Exception as exc:
+        record_check("Artifact is readable", False, str(exc))
+        print("Result: FAILED")
+        return False
+
+    record_check("Artifact is readable", True)
+    record_check("Exactly four channel rows", len(data) == 4, f"Rows: {len(data)}")
+
+    required_columns = {
+        "channel",
+        "baseline_spend_usd",
+        "counterfactual_spend_usd",
+        "spend_multiplier",
+        "incremental_spend_usd",
+        "baseline_expected_purchases",
+        "counterfactual_expected_purchases",
+        "expected_incremental_purchases",
+        "baseline_expected_contribution_margin_usd",
+        "counterfactual_expected_contribution_margin_usd",
+        "expected_incremental_contribution_margin_usd",
+        "incremental_cm_per_incremental_dollar",
+        "incrementality_scope",
+        "formula_version",
+    }
+
+    missing_columns = required_columns - set(data.columns)
+    record_check(
+        "Required columns present",
+        not missing_columns,
+        f"Missing: {sorted(missing_columns)}" if missing_columns else "",
+    )
+
+    if missing_columns:
+        print(f"Checks passed: {sum(p for _, p, _ in checks)}/{len(checks)}")
+        print("Result: FAILED")
+        return False
+
+    # 2. Channel coverage and uniqueness.
+    actual_channels = set(data["channel"].dropna())
+    record_check(
+        "Expected channels present",
+        actual_channels == expected_channels,
+        f"Found: {sorted(actual_channels)}",
+    )
+    record_check(
+        "One row per channel",
+        data["channel"].notna().all() and data["channel"].is_unique,
+    )
+
+    # 3. Numeric fields are finite.
+    numeric_columns = [
+        "baseline_spend_usd",
+        "counterfactual_spend_usd",
+        "spend_multiplier",
+        "incremental_spend_usd",
+        "baseline_expected_purchases",
+        "counterfactual_expected_purchases",
+        "expected_incremental_purchases",
+        "baseline_expected_contribution_margin_usd",
+        "counterfactual_expected_contribution_margin_usd",
+        "expected_incremental_contribution_margin_usd",
+        "incremental_cm_per_incremental_dollar",
+    ]
+
+    numeric_values = data[numeric_columns].apply(pd.to_numeric, errors="coerce")
+    record_check(
+        "All numeric values are finite",
+        np.isfinite(numeric_values.to_numpy(dtype=float)).all(),
+    )
+
+    if not np.isfinite(numeric_values.to_numpy(dtype=float)).all():
+        print(f"Checks passed: {sum(p for _, p, _ in checks)}/{len(checks)}")
+        print("Result: FAILED")
+        return False
+
+    data[numeric_columns] = numeric_values
+
+    # 4. Spend and counterfactual assumptions.
+    record_check(
+        "Baseline spend is positive",
+        (data["baseline_spend_usd"] > 0).all(),
+    )
+    record_check(
+        "Incremental spend is positive",
+        (data["incremental_spend_usd"] > 0).all(),
+    )
+    record_check(
+        "Spend multiplier is 1.25",
+        np.allclose(
+            data["spend_multiplier"],
+            expected_spend_multiplier,
+            rtol=0,
+            atol=tolerance,
+        ),
+    )
+    record_check(
+        "Counterfactual spend reconciles",
+        np.allclose(
+            data["counterfactual_spend_usd"],
+            data["baseline_spend_usd"] * data["spend_multiplier"],
+            rtol=1e-8,
+            atol=tolerance,
+        ),
+    )
+    record_check(
+        "Incremental spend reconciles",
+        np.allclose(
+            data["incremental_spend_usd"],
+            data["counterfactual_spend_usd"] - data["baseline_spend_usd"],
+            rtol=1e-8,
+            atol=tolerance,
+        ),
+    )
+
+    # 5. Expected purchase reconciliation.
+    record_check(
+        "Expected purchases are nonnegative",
+        (
+            (data["baseline_expected_purchases"] >= 0)
+            & (data["counterfactual_expected_purchases"] >= 0)
+        ).all(),
+    )
+    record_check(
+        "Incremental purchases reconcile",
+        np.allclose(
+            data["expected_incremental_purchases"],
+            data["counterfactual_expected_purchases"]
+            - data["baseline_expected_purchases"],
+            rtol=1e-8,
+            atol=tolerance,
+        ),
+    )
+
+    # 6. Contribution-margin reconciliation.
+    record_check(
+        "Incremental contribution margin reconciles",
+        np.allclose(
+            data["expected_incremental_contribution_margin_usd"],
+            data["counterfactual_expected_contribution_margin_usd"]
+            - data["baseline_expected_contribution_margin_usd"],
+            rtol=1e-8,
+            atol=tolerance,
+        ),
+    )
+    record_check(
+        "Incremental CM per dollar reconciles",
+        np.allclose(
+            data["incremental_cm_per_incremental_dollar"],
+            data["expected_incremental_contribution_margin_usd"]
+            / data["incremental_spend_usd"],
+            rtol=1e-8,
+            atol=tolerance,
+        ),
+    )
+
+    # 7. Scope and formula version must be explicit and consistent.
+    record_check(
+        "Scope is correctly labeled",
+        data["incrementality_scope"].eq(
+            "existing_customer_purchase_response_only"
+        ).all(),
+    )
+    record_check(
+        "Formula version is v3",
+        data["formula_version"].eq("channel_counterfactual_v3").all(),
+    )
+
+    passed_count = sum(passed for _, passed, _ in checks)
+    total_count = len(checks)
+    all_passed = passed_count == total_count
+
+    print(f"\nChecks passed: {passed_count}/{total_count}")
+    print(f"Result: {'ALL CHECKS PASSED' if all_passed else 'VALIDATION FAILED'}")
+
+    return all_passed
 
 def generate_marketing_touchpoints(
     customers,
@@ -5468,9 +7055,6 @@ def validate_journey_behavior(
     }
 
 
-
-
-
 # ==== function generator ====
 if __name__ == "__main__":
 
@@ -5526,56 +7110,91 @@ if __name__ == "__main__":
     )
     print_memory("after transactions")
 
-    marketing_touchpoints = generate_marketing_touchpoints(
-        customers,
-        hidden_customer_characteristics,
-        channel_responsiveness,
-        marketing_performance,
+
+    true_response_curves = generate_true_response_curves(
+        customers=customers,
+        hidden_customer_characteristics=hidden_customer_characteristics,
+        channel_responsiveness=channel_responsiveness,
+        area_characteristics=area_characteristics,
+        marketing_performance=marketing_performance,
     )
-    print_memory("after marketing touchpoints")
+    print_memory("after generating true response curves")
+
+    response_curve_validation = validate_true_response_curves(
+        true_response_curves
+    )
+    print_memory("after validating true response curves")
+
+    true_channel_incrementality = generate_true_channel_incrementality(
+        customers=customers,
+        hidden_customer_characteristics=hidden_customer_characteristics,
+        channel_responsiveness=channel_responsiveness,
+        area_characteristics=area_characteristics,
+        marketing_performance=marketing_performance,
+    )
+    print_memory("after generating true channel incrementality")
+
+    channel_incrementality_validation = validate_true_channel_incrementality()
+    print_memory("after validating true channel incrementality")
+
+    if not channel_incrementality_validation:
+        raise ValueError("True channel incrementality validation failed.")
+
+    print("\nDay 5 partial run completed.")
+
+
+
+
+    # marketing_touchpoints = generate_marketing_touchpoints(
+    #     customers,
+    #     hidden_customer_characteristics,
+    #     channel_responsiveness,
+    #     marketing_performance,
+    # )
+    # print_memory("after marketing touchpoints")
 
 
 
     # ==== start validation function selection 
     # ============================================
 
-    VALIDATION_DAY = 4
+    # VALIDATION_DAY = 4
 
-    if VALIDATION_DAY == 1:
-        validate_day_1(
-            area_characteristics,
-            experiment_assignment,
-            customers,
-            hidden_customer_characteristics,
-            marketing_performance,
-            transactions,
-        )
+    # if VALIDATION_DAY == 1:
+    #     validate_day_1(
+    #         area_characteristics,
+    #         experiment_assignment,
+    #         customers,
+    #         hidden_customer_characteristics,
+    #         marketing_performance,
+    #         transactions,
+    #     )
 
-    elif VALIDATION_DAY == 2:
-        validate_day_2(
-            customers,
-            hidden_customer_characteristics,
-            transactions,
-        )
+    # elif VALIDATION_DAY == 2:
+    #     validate_day_2(
+    #         customers,
+    #         hidden_customer_characteristics,
+    #         transactions,
+    #     )
 
-    elif VALIDATION_DAY == 3:
-        validate_day_3(
-            area_characteristics,
-            experiment_assignment,
-            customers,
-            hidden_customer_characteristics,
-            channel_responsiveness,
-            marketing_performance,
-            transactions,
-        )
+    # elif VALIDATION_DAY == 3:
+    #     validate_day_3(
+    #         area_characteristics,
+    #         experiment_assignment,
+    #         customers,
+    #         hidden_customer_characteristics,
+    #         channel_responsiveness,
+    #         marketing_performance,
+    #         transactions,
+    #     )
 
-    elif VALIDATION_DAY == 4:
-        validate_journey_behavior(
-            marketing_touchpoints,
-            customers,
-            transactions,
-            run_purchase_journey_diagnostic=True,
-        )
+    # elif VALIDATION_DAY == 4:
+    #     validate_journey_behavior(
+    #         marketing_touchpoints,
+    #         customers,
+    #         transactions,
+    #         run_purchase_journey_diagnostic=True,
+    #     )
 
     # === integrity check for day 4 === 
     # journey_results = validate_journey_behavior(
