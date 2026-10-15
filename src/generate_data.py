@@ -462,7 +462,7 @@ def generate_marketing_performance(
     festival_campaign_configuration,
     area_characteristics,
     experiment_assignment,
-):
+    ):
     """Generate daily campaign spend, impressions, and clicks."""
 
     all_dates = pd.date_range(
@@ -702,7 +702,7 @@ def generate_marketing_performance(
 def validate_marketing_performance(
     marketing_performance,
     experiment_assignment,
-):
+    ):
     """Validate the generated marketing performance data."""
 
     required_columns = [
@@ -1126,7 +1126,7 @@ def generate_transactions(
     channel_responsiveness,
     area_characteristics,
     marketing_performance,
-):
+    ):
     """Generate probabilistic customer transactions."""
 
     # --------------------------------------------------------
@@ -1809,7 +1809,7 @@ def generate_true_response_curves(
     marketing_performance,
     output_dir=SIMULATION_TRUTH_DIR,
     n_grid_points=50,
-):
+    ):
     """
     Generate hidden response-curve truth from the simulator's
     existing customer-acquisition and purchase-probability formulas.
@@ -2246,8 +2246,7 @@ def generate_true_channel_incrementality(
     area_characteristics,
     marketing_performance,
     output_dir=SIMULATION_TRUTH_DIR,
-    spend_multiplier=TREATMENT_SPEND_MULTIPLIER,
-):
+    spend_multiplier=TREATMENT_SPEND_MULTIPLIER, ):
     """
     Estimate modeled existing-customer purchase-response incrementality
     under a channel-wide spend increase.
@@ -2832,11 +2831,1063 @@ def generate_true_channel_incrementality(
 
     return result
 
+def generate_true_customer_value(
+    customers,
+    hidden_customer_characteristics,
+    area_characteristics,
+    transactions,
+    output_dir=SIMULATION_TRUTH_DIR,
+    ):
+    """Generate customer-level hidden economic truth and realized outcomes."""
+
+    required_inputs = {
+        "customers": {
+            "customer_id",
+            "area_id",
+        },
+        "hidden_customer_characteristics": {
+            "customer_id",
+            "entry_date",
+            "purchase_propensity",
+            "aov_tendency",
+            "repeat_purchase_tendency",
+            "price_sensitivity",
+        },
+        "area_characteristics": {
+            "area_id",
+            "purchase_propensity",
+            "aov_tendency",
+        },
+        "transactions": {
+            "transaction_id",
+            "customer_id",
+            "transaction_date",
+            "revenue",
+            "subsidy",
+            "discount",
+            "cancelled",
+        },
+    }
+
+    inputs = {
+        "customers": customers,
+        "hidden_customer_characteristics": hidden_customer_characteristics,
+        "area_characteristics": area_characteristics,
+        "transactions": transactions,
+    }
+
+    for name, required in required_inputs.items():
+        missing = required - set(inputs[name].columns)
+        if missing:
+            raise ValueError(
+                f"{name} is missing required columns: {sorted(missing)}"
+            )
+
+    if customers["customer_id"].duplicated().any():
+        raise ValueError("Duplicate customer_id values in customers.")
+
+    if hidden_customer_characteristics["customer_id"].duplicated().any():
+        raise ValueError(
+            "Duplicate customer_id values in hidden characteristics."
+        )
+
+    if area_characteristics["area_id"].duplicated().any():
+        raise ValueError("Duplicate area_id values in area characteristics.")
+
+    if transactions["transaction_id"].duplicated().any():
+        raise ValueError("Duplicate transaction_id values in transactions.")
+
+    # ---------------------------------------------------------
+    # 1. Combine observable customer IDs with hidden traits
+    # ---------------------------------------------------------
+    customer_truth = (
+        customers[
+            ["customer_id", "area_id"]
+        ]
+        .merge(
+            hidden_customer_characteristics,
+            on="customer_id",
+            how="left",
+            validate="one_to_one",
+        )
+        .merge(
+            area_characteristics[
+                ["area_id", "purchase_propensity", "aov_tendency"]
+            ].rename(
+                columns={
+                    "purchase_propensity": "area_purchase_propensity",
+                    "aov_tendency": "area_aov_tendency",
+                }
+            ),
+            on="area_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    if customer_truth.isna().any().any():
+        raise ValueError(
+            "Customer truth contains missing values after joining "
+            "hidden characteristics and area economics."
+        )
+
+    # ---------------------------------------------------------
+    # 2. Expected unit economics from the simulator's formulas
+    # ---------------------------------------------------------
+    #
+    # AOV = customer tendency
+    #       × area tendency / mean area tendency
+    #       × lognormal noise
+    #
+    # For noise ~ Lognormal(0, 0.18), its arithmetic mean is
+    # exp(0.5 * 0.18**2).
+    # ---------------------------------------------------------
+    customer_truth["expected_aov_usd"] = (
+        customer_truth["aov_tendency"]
+        * customer_truth["area_aov_tendency"]
+        / area_characteristics["aov_tendency"].mean()
+        * np.exp(0.5 * 0.18**2)
+    )
+
+    sensitivity_multiplier = (
+        0.75 + 0.75 * customer_truth["price_sensitivity"]
+    )
+
+    # Expected rates before the simulator's per-booking clipping.
+    regular_discount_rate = 2.0 / (2.0 + 25.0)
+    regular_subsidy_rate = 2.0 / (2.0 + 22.0)
+
+    festival_discount_rate = 2.5 / (2.5 + 18.0) + 0.025
+    festival_subsidy_rate = 2.2 / (2.2 + 16.0) + 0.035
+
+    customer_truth["expected_cancellation_probability"] = (
+        0.025 + 0.025 * customer_truth["price_sensitivity"]
+    )
+
+    # Use each customer's active calendar days to weight October's
+    # promotional economics against the rest of the simulation period.
+    customer_truth["entry_date"] = pd.to_datetime(
+        customer_truth["entry_date"]
+    ).dt.normalize()
+
+    simulation_end = pd.Timestamp(POST_EXPERIMENT_END)
+
+    active_days = (
+        (simulation_end - customer_truth["entry_date"]).dt.days + 1
+    )
+
+    october_days = np.zeros(len(customer_truth), dtype=float)
+
+    for year in range(
+        HISTORICAL_START.year,
+        simulation_end.year + 1,
+    ):
+        october_start = pd.Timestamp(year=year, month=10, day=1)
+        october_end = october_start + pd.offsets.MonthEnd(0)
+
+        overlap_start = customer_truth["entry_date"].clip(
+            lower=october_start
+        )
+        overlap_end = pd.Series(
+            simulation_end, index=customer_truth.index
+        ).where(
+            pd.Series(simulation_end, index=customer_truth.index)
+            < october_end,
+            october_end,
+        )
+
+        overlap_days = (
+            (overlap_end - overlap_start).dt.days + 1
+        ).clip(lower=0)
+
+        valid_overlap = (
+            (customer_truth["entry_date"] <= october_end)
+            & (simulation_end >= october_start)
+        )
+        october_days += overlap_days.where(valid_overlap, 0).to_numpy()
+
+    october_share = october_days / active_days.to_numpy()
+    regular_share = 1.0 - october_share
+
+    customer_truth["expected_discount_rate_pre_clip"] = (
+        regular_share * regular_discount_rate
+        + october_share * festival_discount_rate
+    ) * sensitivity_multiplier
+
+    customer_truth["expected_subsidy_rate_pre_clip"] = (
+        regular_share * regular_subsidy_rate
+        + october_share * festival_subsidy_rate
+    ) * sensitivity_multiplier
+
+    customer_truth["expected_unit_cm_usd_pre_clip"] = (
+        customer_truth["expected_aov_usd"]
+        * (
+            1.0
+            - customer_truth["expected_discount_rate_pre_clip"]
+            - customer_truth["expected_subsidy_rate_pre_clip"]
+        )
+    )
+
+    # Cancelled bookings contribute zero, so this is expected CM per
+    # attempted booking under the same pre-clipping rate approximation.
+    customer_truth["expected_cm_per_attempt_usd_pre_clip"] = (
+        customer_truth["expected_unit_cm_usd_pre_clip"]
+        * (1.0 - customer_truth["expected_cancellation_probability"])
+    )
+
+    # ---------------------------------------------------------
+    # 3. Realized outcomes across the full simulation period
+    # ---------------------------------------------------------
+    transaction_data = transactions.copy()
+    transaction_data["transaction_date"] = pd.to_datetime(
+        transaction_data["transaction_date"]
+    )
+
+    transaction_data["realized_contribution_margin_usd"] = (
+        transaction_data["revenue"]
+        - transaction_data["subsidy"]
+        - transaction_data["discount"]
+    )
+
+    transaction_data["completed_booking"] = (
+        ~transaction_data["cancelled"].astype(bool)
+    )
+
+    realized = (
+        transaction_data.groupby("customer_id", as_index=False)
+        .agg(
+            transaction_attempts=("transaction_id", "size"),
+            cancelled_bookings=("cancelled", "sum"),
+            completed_bookings=("completed_booking", "sum"),
+            realized_revenue_usd=("revenue", "sum"),
+            realized_subsidy_usd=("subsidy", "sum"),
+            realized_discount_usd=("discount", "sum"),
+            realized_contribution_margin_usd=(
+                "realized_contribution_margin_usd",
+                "sum",
+            ),
+        )
+    )
+
+    customer_truth = customer_truth.merge(
+        realized,
+        on="customer_id",
+        how="left",
+        validate="one_to_one",
+    )
+
+    realized_columns = [
+        "transaction_attempts",
+        "cancelled_bookings",
+        "completed_bookings",
+        "realized_revenue_usd",
+        "realized_subsidy_usd",
+        "realized_discount_usd",
+        "realized_contribution_margin_usd",
+    ]
+    customer_truth[realized_columns] = customer_truth[
+        realized_columns
+    ].fillna(0)
+
+    count_columns = [
+        "transaction_attempts",
+        "cancelled_bookings",
+        "completed_bookings",
+    ]
+    customer_truth[count_columns] = customer_truth[
+        count_columns
+    ].astype("int64")
+
+    customer_truth["simulation_start_date"] = HISTORICAL_START
+    customer_truth["simulation_end_date"] = POST_EXPERIMENT_END
+    customer_truth["unit_economics_scope"] = (
+        "calendar_weighted_expected_unit_economics_pre_clip"
+    )
+    customer_truth["realized_value_scope"] = (
+        "full_simulation_period_realized_contribution_margin"
+    )
+    customer_truth["formula_version"] = "customer_value_v1"
+
+    # Retain the hidden customer traits, area economics, unit-economics
+    # estimates, and realized outcomes. Do not include channel response
+    # features or raw transaction-level records in this artifact.
+    output_columns = [
+        "customer_id",
+        "area_id",
+        "entry_date",
+        "simulation_start_date",
+        "simulation_end_date",
+        "purchase_propensity",
+        "repeat_purchase_tendency",
+        "aov_tendency",
+        "price_sensitivity",
+        "area_purchase_propensity",
+        "area_aov_tendency",
+        "expected_aov_usd",
+        "expected_discount_rate_pre_clip",
+        "expected_subsidy_rate_pre_clip",
+        "expected_cancellation_probability",
+        "expected_unit_cm_usd_pre_clip",
+        "expected_cm_per_attempt_usd_pre_clip",
+        *realized_columns,
+        "unit_economics_scope",
+        "realized_value_scope",
+        "formula_version",
+    ]
+
+    customer_truth = customer_truth[output_columns]
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "true_customer_value.csv"
+    customer_truth.to_csv(output_path, index=False)
+
+    print("\n=== True Customer Value ===")
+    print(f"Customers: {len(customer_truth):,}")
+    print(f"Saved: {output_path}")
+    print(
+        "Total realized contribution margin: "
+        f"${customer_truth['realized_contribution_margin_usd'].sum():,.2f}"
+    )
+
+    return customer_truth
+
+def generate_true_area_effect(
+    area_characteristics,
+    experiment_assignment,
+    output_dir=SIMULATION_TRUTH_DIR,
+    ):
+    """Save hidden area-level simulation parameters and derived effects."""
+
+    required_area_columns = {
+        "area_id",
+        "baseline_demand",
+        "customer_volume_potential",
+        "purchase_propensity",
+        "aov_tendency",
+        "seasonality_sensitivity",
+        "marketing_responsiveness",
+    }
+    required_assignment_columns = {
+        "area_id",
+        "experiment_group",
+    }
+
+    missing_area = required_area_columns - set(
+        area_characteristics.columns
+    )
+    missing_assignment = required_assignment_columns - set(
+        experiment_assignment.columns
+    )
+
+    if missing_area:
+        raise ValueError(
+            f"Area characteristics missing columns: {sorted(missing_area)}"
+        )
+    if missing_assignment:
+        raise ValueError(
+            f"Experiment assignment missing columns: "
+            f"{sorted(missing_assignment)}"
+        )
+
+    if area_characteristics["area_id"].duplicated().any():
+        raise ValueError("Area characteristics contain duplicate area IDs.")
+    if experiment_assignment["area_id"].duplicated().any():
+        raise ValueError("Experiment assignment contains duplicate area IDs.")
+
+    result = area_characteristics[
+        [
+            "area_id",
+            "baseline_demand",
+            "customer_volume_potential",
+            "purchase_propensity",
+            "aov_tendency",
+            "seasonality_sensitivity",
+            "marketing_responsiveness",
+        ]
+    ].copy()
+
+    result = result.merge(
+        experiment_assignment[["area_id", "experiment_group"]],
+        on="area_id",
+        how="left",
+        validate="one_to_one",
+    )
+
+    if result["experiment_group"].isna().any():
+        raise ValueError("Some areas have no experiment assignment.")
+
+    result["baseline_acquisition_potential"] = (
+        result["baseline_demand"]
+        * result["customer_volume_potential"]
+        * result["marketing_responsiveness"]
+    )
+
+    result["purchase_propensity_index"] = (
+        result["purchase_propensity"]
+        / result["purchase_propensity"].mean()
+    )
+
+    result["aov_index"] = (
+        result["aov_tendency"]
+        / result["aov_tendency"].mean()
+    )
+
+    result["formula_version"] = "area_effect_v1"
+
+    numeric_columns = [
+        "baseline_demand",
+        "customer_volume_potential",
+        "purchase_propensity",
+        "aov_tendency",
+        "seasonality_sensitivity",
+        "marketing_responsiveness",
+        "baseline_acquisition_potential",
+        "purchase_propensity_index",
+        "aov_index",
+    ]
+
+    if not np.isfinite(
+        result[numeric_columns].to_numpy(dtype=float)
+    ).all():
+        raise ValueError("Area-effect truth contains non-finite values.")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_dir / "true_area_effect.csv"
+    result.to_csv(output_path, index=False)
+
+    print("\n=== True Area Effect ===")
+    print(f"Areas: {len(result):,}")
+    print(f"Saved: {output_path}")
+    print(
+        result[
+            [
+                "area_id",
+                "experiment_group",
+                "baseline_acquisition_potential",
+                "purchase_propensity_index",
+                "aov_index",
+                "marketing_responsiveness",
+            ]
+        ].round(4).to_string(index=False)
+    )
+
+    return result
+
+def generate_true_experiment_effect(
+    customers,
+    hidden_customer_characteristics,
+    channel_responsiveness,
+    area_characteristics,
+    marketing_performance,
+    experiment_assignment,
+    output_dir=SIMULATION_TRUTH_DIR,
+    ):
+    """
+    Generate modeled experiment-effect truth for:
+    1. Customer acquisition.
+    2. Existing-customer purchase response.
+
+    Both counterfactuals compare the same treatment areas under
+    baseline spend versus treatment spend, holding observed
+    impression noise and customer characteristics fixed.
+
+    Scope limitations:
+    - Acquisition uses expected clicks in the existing
+      area-level acquisition response formula.
+    - Purchase response conditions on the generated customer
+      population and does not simulate repeat-purchase state.
+    - Neither result represents a complete lifetime causal effect.
+    """
+
+    # ---------------------------------------------------------
+    # 1. Validate assignment and inputs
+    # ---------------------------------------------------------
+    if TREATMENT_SPEND_MULTIPLIER <= 1:
+        raise ValueError(
+            "TREATMENT_SPEND_MULTIPLIER must exceed 1."
+        )
+
+    required_assignment_columns = {
+        "experiment_id",
+        "area_id",
+        "experiment_group",
+    }
+    missing = required_assignment_columns - set(
+        experiment_assignment.columns
+    )
+    if missing:
+        raise ValueError(
+            f"Experiment assignment is missing columns: {sorted(missing)}"
+        )
+
+    if experiment_assignment["area_id"].duplicated().any():
+        raise ValueError(
+            "Each area must have exactly one experiment assignment."
+        )
+
+    assignment = experiment_assignment.set_index(
+        "area_id"
+    )["experiment_group"]
+
+    if set(assignment.unique()) != {"treatment", "control"}:
+        raise ValueError(
+            "Both treatment and control groups are required."
+        )
+
+    area_ids = area_characteristics["area_id"].tolist()
+
+    if set(assignment.index) != set(area_ids):
+        raise ValueError(
+            "Experiment assignment does not match area coverage."
+        )
+
+    treatment_area_ids = set(
+        assignment.index[assignment == "treatment"]
+    )
+
+    if not treatment_area_ids:
+        raise ValueError("No treatment areas were assigned.")
+
+    # ---------------------------------------------------------
+    # 2. Prepare experiment-period marketing data
+    # ---------------------------------------------------------
+    experiment_dates = pd.date_range(
+        EXPERIMENT_START,
+        EXPERIMENT_END,
+        freq="D",
+    )
+
+    marketing = marketing_performance.loc[
+        pd.to_datetime(
+            marketing_performance["date"]
+        ).between(EXPERIMENT_START, EXPERIMENT_END)
+    ].copy()
+
+    if marketing.empty:
+        raise ValueError(
+            "No marketing data found for the experiment period."
+        )
+
+    marketing["date"] = pd.to_datetime(
+        marketing["date"]
+    ).dt.normalize()
+
+    marketing["area_id"] = marketing[
+        "campaign_name"
+    ].str.extract(r"(AREA_\d{3})$")
+
+    marketing["campaign_type"] = marketing[
+        "campaign_name"
+    ].str.extract(r"^[^_]+_(.+)_AREA_\d{3}$")
+
+    if marketing[
+        ["area_id", "campaign_type"]
+    ].isna().any().any():
+        raise ValueError(
+            "Could not extract area or campaign type from campaign names."
+        )
+
+    if marketing["campaign_type"].eq("10.10").any():
+        raise ValueError(
+            "Festival campaigns unexpectedly appear during the July experiment."
+        )
+
+    if not set(marketing["area_id"]).issubset(set(area_ids)):
+        raise ValueError(
+            "Marketing data contains an unknown area."
+        )
+
+    marketing["base_ctr"] = marketing["channel"].map({
+        channel: parameters["base_ctr"]
+        for channel, parameters in CHANNEL_PARAMETERS.items()
+    })
+
+    marketing["ctr_multiplier"] = marketing[
+        "campaign_type"
+    ].map({
+        campaign_type: parameters["ctr"]
+        for campaign_type, parameters
+        in CAMPAIGN_TYPE_MULTIPLIERS.items()
+    })
+
+    if marketing[
+        ["base_ctr", "ctr_multiplier"]
+    ].isna().any().any():
+        raise ValueError(
+            "Could not map channel or campaign CTR assumptions."
+        )
+
+    # Use the same generated impression noise in both scenarios.
+    # Treatment impressions are divided by the experiment multiplier
+    # to estimate their baseline-spend counterfactual.
+    is_treatment = marketing["area_id"].isin(
+        treatment_area_ids
+    )
+
+    marketing["baseline_impressions"] = (
+        marketing["impressions"]
+        / np.where(
+            is_treatment,
+            TREATMENT_SPEND_MULTIPLIER,
+            1.0,
+        )
+    )
+
+    marketing["treatment_impressions"] = (
+        marketing["impressions"].to_numpy(dtype=float)
+    )
+
+    marketing["baseline_expected_clicks"] = (
+        np.rint(marketing["baseline_impressions"])
+        * marketing["base_ctr"]
+        * marketing["ctr_multiplier"]
+    )
+
+    marketing["treatment_expected_clicks"] = (
+        np.rint(marketing["treatment_impressions"])
+        * marketing["base_ctr"]
+        * marketing["ctr_multiplier"]
+    )
+
+    # ---------------------------------------------------------
+    # 3. Estimate the customer-acquisition effect
+    # ---------------------------------------------------------
+    area_day_clicks = (
+        marketing.groupby(
+            ["date", "area_id"],
+            as_index=False,
+        )
+        .agg(
+            baseline_clicks=(
+                "baseline_expected_clicks", "sum"
+            ),
+            treatment_clicks=(
+                "treatment_expected_clicks", "sum"
+            ),
+        )
+    )
+
+    acquisition_parameters = area_characteristics[
+        [
+            "area_id",
+            "baseline_demand",
+            "customer_volume_potential",
+            "marketing_responsiveness",
+        ]
+    ]
+
+    area_day_clicks = area_day_clicks.merge(
+        acquisition_parameters,
+        on="area_id",
+        how="left",
+        validate="many_to_one",
+    )
+
+    parameter_columns = [
+        "baseline_demand",
+        "customer_volume_potential",
+        "marketing_responsiveness",
+    ]
+
+    if area_day_clicks[parameter_columns].isna().any().any():
+        raise ValueError(
+            "Missing area-level acquisition parameters."
+        )
+
+    area_day_clicks["baseline_acquisition_rate"] = (
+        area_day_clicks["baseline_demand"]
+        * area_day_clicks["customer_volume_potential"]
+        * 4.5
+    )
+
+    area_day_clicks["baseline_expected_customers"] = (
+        area_day_clicks["baseline_acquisition_rate"]
+        * (
+            1
+            + 0.08
+            * np.log1p(area_day_clicks["baseline_clicks"])
+            * area_day_clicks["marketing_responsiveness"]
+        )
+    )
+
+    area_day_clicks["treatment_expected_customers"] = (
+        area_day_clicks["baseline_acquisition_rate"]
+        * (
+            1
+            + 0.08
+            * np.log1p(area_day_clicks["treatment_clicks"])
+            * area_day_clicks["marketing_responsiveness"]
+        )
+    )
+
+    treatment_acquisition = area_day_clicks.loc[
+        area_day_clicks["area_id"].isin(treatment_area_ids)
+    ]
+
+    acquisition_baseline = float(
+        treatment_acquisition[
+            "baseline_expected_customers"
+        ].sum()
+    )
+
+    acquisition_treatment = float(
+        treatment_acquisition[
+            "treatment_expected_customers"
+        ].sum()
+    )
+
+    # ---------------------------------------------------------
+    # 4. Prepare customer-level characteristics
+    # ---------------------------------------------------------
+    customer_data = (
+        customers
+        .merge(
+            hidden_customer_characteristics,
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            channel_responsiveness,
+            on="customer_id",
+            how="inner",
+            validate="one_to_one",
+        )
+        .merge(
+            area_characteristics[
+                [
+                    "area_id",
+                    "purchase_propensity",
+                    "seasonality_sensitivity",
+                    "marketing_responsiveness",
+                ]
+            ].rename(
+                columns={
+                    "purchase_propensity": "area_purchase_propensity",
+                    "seasonality_sensitivity": "area_seasonality",
+                    "marketing_responsiveness": "area_marketing_response",
+                }
+            ),
+            on="area_id",
+            how="left",
+            validate="many_to_one",
+        )
+    )
+
+    if len(customer_data) != len(customers):
+        raise ValueError(
+            "Customer merges changed the customer count."
+        )
+
+    required_customer_columns = [
+        "entry_date",
+        "purchase_propensity",
+        "area_purchase_propensity",
+        "area_seasonality",
+        "area_marketing_response",
+        *ELIGIBLE_CHANNELS,
+    ]
+
+    if customer_data[
+        required_customer_columns
+    ].isna().any().any():
+        raise ValueError(
+            "Missing customer, area, or channel-response characteristics."
+        )
+
+    customer_area_positions = pd.Index(area_ids).get_indexer(
+        customer_data["area_id"].to_numpy()
+    )
+
+    if (customer_area_positions < 0).any():
+        raise ValueError(
+            "A customer references an unknown area."
+        )
+
+    entry_dates = pd.to_datetime(
+        customer_data["entry_date"]
+    ).dt.normalize().to_numpy(dtype="datetime64[ns]")
+
+    customer_propensity = customer_data[
+        "purchase_propensity"
+    ].to_numpy(dtype=float)
+
+    area_propensity = customer_data[
+        "area_purchase_propensity"
+    ].to_numpy(dtype=float)
+
+    area_seasonality = customer_data[
+        "area_seasonality"
+    ].to_numpy(dtype=float)
+
+    area_marketing_response = customer_data[
+        "area_marketing_response"
+    ].to_numpy(dtype=float)
+
+    customer_channel_response = customer_data[
+        ELIGIBLE_CHANNELS
+    ].to_numpy(dtype=float)
+
+    base_probability = (
+        0.00075
+        * customer_propensity
+        / customer_propensity.mean()
+        * area_propensity
+        / area_characteristics["purchase_propensity"].mean()
+        * np.power(1.05, area_seasonality)
+    )
+
+    # ---------------------------------------------------------
+    # 5. Build area-day-channel pressure matrices
+    # ---------------------------------------------------------
+    area_customer_counts = (
+        customers.groupby("area_id")["customer_id"].nunique()
+    )
+
+    marketing["customer_count"] = marketing["area_id"].map(
+        area_customer_counts
+    )
+
+    if marketing["customer_count"].isna().any():
+        raise ValueError(
+            "Marketing data contains an area without customers."
+        )
+
+    area_day_channel = (
+        marketing.groupby(
+            ["date", "area_id", "channel"],
+            as_index=False,
+        )
+        .agg(
+            baseline_expected_clicks=(
+                "baseline_expected_clicks", "sum"
+            ),
+            treatment_expected_clicks=(
+                "treatment_expected_clicks", "sum"
+            ),
+            customer_count=("customer_count", "first"),
+        )
+    )
+
+    area_day_channel["baseline_pressure"] = (
+        area_day_channel["baseline_expected_clicks"]
+        / area_day_channel["customer_count"]
+    )
+
+    area_day_channel["treatment_pressure"] = (
+        area_day_channel["treatment_expected_clicks"]
+        / area_day_channel["customer_count"]
+    )
+
+    all_area_days = pd.MultiIndex.from_product(
+        [experiment_dates, area_ids],
+        names=["date", "area_id"],
+    )
+
+    def make_pressure_matrix(value_column):
+        return (
+            area_day_channel
+            .pivot(
+                index=["date", "area_id"],
+                columns="channel",
+                values=value_column,
+            )
+            .reindex(index=all_area_days, fill_value=0)
+            .reindex(columns=ELIGIBLE_CHANNELS, fill_value=0)
+            .fillna(0)
+        )
+
+    baseline_pressure_by_day = make_pressure_matrix(
+        "baseline_pressure"
+    )
+
+    treatment_pressure_by_day = make_pressure_matrix(
+        "treatment_pressure"
+    )
+
+    # ---------------------------------------------------------
+    # 6. Calculate expected purchases under both scenarios
+    # ---------------------------------------------------------
+    expected_purchases = {
+        "baseline": 0.0,
+        "treatment": 0.0,
+    }
+
+    for simulation_date in experiment_dates:
+        active_customer_mask = (
+            entry_dates <= simulation_date.to_datetime64()
+        )
+
+        # Each matrix has a MultiIndex of (date, area_id).
+        # Selecting one date yields one row per area, not per day.
+        baseline_daily_pressure = (
+            baseline_pressure_by_day
+            .loc[simulation_date]
+            .reindex(area_ids)
+            .to_numpy(dtype=float)
+        )
+
+        treatment_daily_pressure = (
+            treatment_pressure_by_day
+            .loc[simulation_date]
+            .reindex(area_ids)
+            .to_numpy(dtype=float)
+        )
+
+        # Control areas must be identical in both scenarios.
+        treatment_area_mask = np.array([
+            area_id in treatment_area_ids for area_id in area_ids
+        ])
+
+        treatment_daily_pressure[
+            ~treatment_area_mask, :
+        ] = baseline_daily_pressure[
+            ~treatment_area_mask, :
+        ]
+
+        for scenario, daily_area_pressure in [
+            ("baseline", baseline_daily_pressure),
+            ("treatment", treatment_daily_pressure),
+        ]:
+            pressure_by_customer = daily_area_pressure[
+                customer_area_positions
+            ]
+
+            combined_response = (
+                pressure_by_customer
+                * customer_channel_response
+            ).sum(axis=1)
+
+            marketing_effect = (
+                1
+                + 0.18
+                * np.log1p(combined_response / 0.03)
+                * area_marketing_response
+            )
+
+            daily_probability = np.clip(
+                base_probability * marketing_effect,
+                0.0,
+                0.05,
+            )
+
+            daily_probability[~active_customer_mask] = 0.0
+
+            expected_purchases[scenario] += float(
+                daily_probability.sum()
+            )
+
+    # ---------------------------------------------------------
+    # 7. Create and persist the artifact
+    # ---------------------------------------------------------
+    definitions = [
+        {
+            "effect_mechanism": "customer_acquisition",
+            "counterfactual_scope": (
+                "treatment_areas_only; expected_area_day_acquisition;"
+                "log_click_response"
+            ),
+            "outcome_metric": "expected_new_customers",
+            "baseline_expected_outcome": acquisition_baseline,
+            "treatment_expected_outcome": acquisition_treatment,
+            "formula_version": "experiment_acquisition_v1",
+        },
+        {
+            "effect_mechanism": "existing_customer_purchase_response",
+            "counterfactual_scope": (
+                "fixed_generated_customer_population;"
+                "experiment_period_daily_purchase_probability;"
+                "no_repeat_lifecycle_state"
+            ),
+            "outcome_metric": "expected_purchases",
+            "baseline_expected_outcome": expected_purchases["baseline"],
+            "treatment_expected_outcome": expected_purchases["treatment"],
+            "formula_version": "experiment_purchase_response_v1",
+        },
+    ]
+
+    records = []
+
+    for definition in definitions:
+        baseline = definition["baseline_expected_outcome"]
+        treatment = definition["treatment_expected_outcome"]
+        incremental = treatment - baseline
+
+        records.append({
+            **definition,
+            "experiment_id": "EXP_001",
+            "experiment_start": EXPERIMENT_START,
+            "experiment_end": EXPERIMENT_END,
+            "spend_multiplier": TREATMENT_SPEND_MULTIPLIER,
+            "expected_incremental_outcome": incremental,
+            "relative_uplift": (
+                incremental / baseline if baseline > 0 else np.nan
+            ),
+        })
+
+    result = pd.DataFrame(records)
+
+    numeric_columns = [
+        "baseline_expected_outcome",
+        "treatment_expected_outcome",
+        "expected_incremental_outcome",
+        "relative_uplift",
+    ]
+
+    if not np.isfinite(
+        result[numeric_columns].to_numpy(dtype=float)
+    ).all():
+        raise ValueError(
+            "Experiment-effect artifact contains non-finite values."
+        )
+
+    if not np.allclose(
+        result["expected_incremental_outcome"],
+        result["treatment_expected_outcome"]
+        - result["baseline_expected_outcome"],
+        rtol=1e-9,
+        atol=1e-8,
+    ):
+        raise ValueError(
+            "Incremental outcome reconciliation failed."
+        )
+
+    if not result["expected_incremental_outcome"].ge(0).all():
+        raise ValueError(
+            "Expected incremental effects cannot be negative under this model."
+        )
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_dir / "true_experiment_effect.csv"
+    result.to_csv(output_path, index=False)
+
+    print("\n=== True Experiment Effect ===")
+    print(
+        result[
+            [
+                "effect_mechanism",
+                "baseline_expected_outcome",
+                "treatment_expected_outcome",
+                "expected_incremental_outcome",
+                "relative_uplift",
+            ]
+        ].to_string(index=False)
+    )
+    print(f"\nSaved: {output_path}")
+
+    return result
+
+
+
 def validate_true_response_curves(
     response_curves,
     output_dir=SIMULATION_TRUTH_DIR,
-    tolerance=1e-8,
-):
+    tolerance=1e-8, ):
     """
     Validate generated hidden response-curve truth.
 
@@ -3188,7 +4239,6 @@ def validate_true_response_curves(
 
     return report
 
-
 def validate_true_channel_incrementality():
     """Validate the saved channel-level incrementality truth artifact."""
     artifact_path = SIMULATION_TRUTH_DIR / "true_channel_incrementality.csv"
@@ -3391,12 +4441,868 @@ def validate_true_channel_incrementality():
 
     return all_passed
 
+def validate_true_customer_value(
+    customer_value,
+    customers,
+    hidden_customer_characteristics,
+    area_characteristics,
+    transactions,
+    ):
+    """Validate customer-level economic truth and realized outcomes."""
+
+    print("\n=== True Customer Value Validation ===")
+    checks = []
+
+    def check(name, condition, detail=""):
+        passed = bool(condition)
+        checks.append(passed)
+        status = "PASS" if passed else "FAIL"
+        suffix = f" | {detail}" if detail else ""
+        print(f"[{status}] {name}{suffix}")
+
+    required_columns = {
+        "customer_id",
+        "area_id",
+        "entry_date",
+        "purchase_propensity",
+        "repeat_purchase_tendency",
+        "aov_tendency",
+        "price_sensitivity",
+        "expected_aov_usd",
+        "expected_unit_cm_usd_pre_clip",
+        "expected_cm_per_attempt_usd_pre_clip",
+        "expected_cancellation_probability",
+        "transaction_attempts",
+        "cancelled_bookings",
+        "completed_bookings",
+        "realized_revenue_usd",
+        "realized_subsidy_usd",
+        "realized_discount_usd",
+        "realized_contribution_margin_usd",
+        "unit_economics_scope",
+        "realized_value_scope",
+        "formula_version",
+    }
+
+    missing = required_columns - set(customer_value.columns)
+    check(
+        "Required columns present",
+        not missing,
+        f"Missing: {sorted(missing)}" if missing else "",
+    )
+
+    if missing:
+        print(f"Checks passed: {sum(checks)}/{len(checks)}")
+        print("Result: VALIDATION FAILED")
+        return False
+
+    check(
+        "One row per customer",
+        customer_value["customer_id"].notna().all()
+        and customer_value["customer_id"].is_unique,
+    )
+    check(
+        "Customer coverage matches source",
+        len(customer_value) == len(customers)
+        and set(customer_value["customer_id"]) == set(customers["customer_id"]),
+    )
+
+    check(
+        "Scope and formula labels are correct",
+        customer_value["unit_economics_scope"].eq(
+            "calendar_weighted_expected_unit_economics_pre_clip"
+        ).all()
+        and customer_value["realized_value_scope"].eq(
+            "full_simulation_period_realized_contribution_margin"
+        ).all()
+        and customer_value["formula_version"].eq(
+            "customer_value_v1"
+        ).all(),
+    )
+
+    numeric_columns = [
+        "purchase_propensity",
+        "repeat_purchase_tendency",
+        "aov_tendency",
+        "price_sensitivity",
+        "area_purchase_propensity",
+        "area_aov_tendency",
+        "expected_aov_usd",
+        "expected_discount_rate_pre_clip",
+        "expected_subsidy_rate_pre_clip",
+        "expected_cancellation_probability",
+        "expected_unit_cm_usd_pre_clip",
+        "expected_cm_per_attempt_usd_pre_clip",
+        "transaction_attempts",
+        "cancelled_bookings",
+        "completed_bookings",
+        "realized_revenue_usd",
+        "realized_subsidy_usd",
+        "realized_discount_usd",
+        "realized_contribution_margin_usd",
+    ]
+
+    numeric_values = customer_value[numeric_columns].to_numpy(dtype=float)
+    check(
+        "Numeric values are finite",
+        np.isfinite(numeric_values).all(),
+    )
+
+    if not np.isfinite(numeric_values).all():
+        print(f"Checks passed: {sum(checks)}/{len(checks)}")
+        print("Result: VALIDATION FAILED")
+        return False
+
+    # Hidden customer traits must match the original simulator inputs.
+    hidden_check = customer_value[
+        [
+            "customer_id",
+            "purchase_propensity",
+            "repeat_purchase_tendency",
+            "aov_tendency",
+            "price_sensitivity",
+        ]
+    ].merge(
+        hidden_customer_characteristics[
+            [
+                "customer_id",
+                "purchase_propensity",
+                "repeat_purchase_tendency",
+                "aov_tendency",
+                "price_sensitivity",
+            ]
+        ],
+        on="customer_id",
+        how="outer",
+        suffixes=("_truth", "_source"),
+        indicator=True,
+        validate="one_to_one",
+    )
+
+    hidden_matches = (
+        hidden_check["_merge"].eq("both").all()
+        and all(
+            np.allclose(
+                hidden_check[f"{column}_truth"],
+                hidden_check[f"{column}_source"],
+                rtol=0,
+                atol=1e-12,
+            )
+            for column in [
+                "purchase_propensity",
+                "repeat_purchase_tendency",
+                "aov_tendency",
+                "price_sensitivity",
+            ]
+        )
+    )
+    check("Hidden traits match simulator source", hidden_matches)
+
+    # Recalculate expected AOV from the exact AOV formula.
+    expected_aov = (
+        customer_value["aov_tendency"]
+        * customer_value["area_aov_tendency"]
+        / area_characteristics["aov_tendency"].mean()
+        * np.exp(0.5 * 0.18**2)
+    )
+    check(
+        "Expected AOV reconciles",
+        np.allclose(
+            customer_value["expected_aov_usd"],
+            expected_aov,
+            rtol=1e-8,
+            atol=1e-8,
+        ),
+    )
+
+    expected_cancel_probability = (
+        0.025 + 0.025 * customer_value["price_sensitivity"]
+    )
+    check(
+        "Cancellation probability reconciles",
+        np.allclose(
+            customer_value["expected_cancellation_probability"],
+            expected_cancel_probability,
+            rtol=0,
+            atol=1e-12,
+        ),
+    )
+
+    expected_unit_cm = (
+        customer_value["expected_aov_usd"]
+        * (
+            1
+            - customer_value["expected_discount_rate_pre_clip"]
+            - customer_value["expected_subsidy_rate_pre_clip"]
+        )
+    )
+    check(
+        "Expected unit CM reconciles",
+        np.allclose(
+            customer_value["expected_unit_cm_usd_pre_clip"],
+            expected_unit_cm,
+            rtol=1e-8,
+            atol=1e-8,
+        ),
+    )
+
+    expected_attempt_cm = (
+        customer_value["expected_unit_cm_usd_pre_clip"]
+        * (1 - customer_value["expected_cancellation_probability"])
+    )
+    check(
+        "Expected CM per attempt reconciles",
+        np.allclose(
+            customer_value["expected_cm_per_attempt_usd_pre_clip"],
+            expected_attempt_cm,
+            rtol=1e-8,
+            atol=1e-8,
+        ),
+    )
+
+    check(
+        "Expected AOV is positive",
+        (customer_value["expected_aov_usd"] > 0).all(),
+    )
+    check(
+        "Cancellation probability is within bounds",
+        customer_value["expected_cancellation_probability"].between(0, 1).all(),
+    )
+
+    check(
+        "Booking counts reconcile",
+        (
+            customer_value["transaction_attempts"]
+            == customer_value["completed_bookings"]
+            + customer_value["cancelled_bookings"]
+        ).all(),
+    )
+
+    # Reconcile customer-level realized values against transactions.
+    tx = transactions.copy()
+    tx["realized_contribution_margin_usd"] = (
+        tx["revenue"] - tx["subsidy"] - tx["discount"]
+    )
+    tx["completed_booking"] = ~tx["cancelled"].astype(bool)
+
+    tx_summary = tx.groupby("customer_id").agg(
+        transaction_attempts=("transaction_id", "size"),
+        cancelled_bookings=("cancelled", "sum"),
+        completed_bookings=("completed_booking", "sum"),
+        realized_revenue_usd=("revenue", "sum"),
+        realized_subsidy_usd=("subsidy", "sum"),
+        realized_discount_usd=("discount", "sum"),
+        realized_contribution_margin_usd=(
+            "realized_contribution_margin_usd",
+            "sum",
+        ),
+    )
+
+    expected_summary = (
+        customer_value.set_index("customer_id")[
+            [
+                "transaction_attempts",
+                "cancelled_bookings",
+                "completed_bookings",
+                "realized_revenue_usd",
+                "realized_subsidy_usd",
+                "realized_discount_usd",
+                "realized_contribution_margin_usd",
+            ]
+        ]
+        .sort_index()
+    )
+
+    tx_summary = tx_summary.reindex(expected_summary.index, fill_value=0)
+    tx_summary = tx_summary.sort_index()
+
+    counts_match = np.array_equal(
+        expected_summary[
+            ["transaction_attempts", "cancelled_bookings", "completed_bookings"]
+        ].to_numpy(dtype=np.int64),
+        tx_summary[
+            ["transaction_attempts", "cancelled_bookings", "completed_bookings"]
+        ].to_numpy(dtype=np.int64),
+    )
+
+    values_match = np.allclose(
+        expected_summary[
+            [
+                "realized_revenue_usd",
+                "realized_subsidy_usd",
+                "realized_discount_usd",
+                "realized_contribution_margin_usd",
+            ]
+        ].to_numpy(dtype=float),
+        tx_summary[
+            [
+                "realized_revenue_usd",
+                "realized_subsidy_usd",
+                "realized_discount_usd",
+                "realized_contribution_margin_usd",
+            ]
+        ].to_numpy(dtype=float),
+        rtol=1e-8,
+        atol=1e-6,
+    )
+
+    check("Realized booking counts reconcile to transactions", counts_match)
+    check("Realized economics reconcile to transactions", values_match)
+
+    passed_count = sum(checks)
+    total_count = len(checks)
+    all_passed = passed_count == total_count
+
+    print(f"\nChecks passed: {passed_count}/{total_count}")
+    print(f"Result: {'ALL CHECKS PASSED' if all_passed else 'VALIDATION FAILED'}")
+
+    return all_passed
+
+def validate_true_area_effect(
+    area_effect,
+    area_characteristics,
+    experiment_assignment,
+    output_dir=SIMULATION_TRUTH_DIR,
+    ):
+    """Validate area-effect truth against the simulator source parameters."""
+
+    checks = []
+
+    def record_check(name, passed, detail=""):
+        passed = bool(passed)
+        checks.append((name, passed, detail))
+        status = "PASS" if passed else "FAIL"
+        suffix = f" | {detail}" if detail else ""
+        print(f"[{status}] {name}{suffix}")
+
+    print("\n=== True Area Effect Validation ===")
+
+    required_columns = {
+        "area_id",
+        "experiment_group",
+        "baseline_demand",
+        "customer_volume_potential",
+        "baseline_acquisition_potential",
+        "purchase_propensity",
+        "purchase_propensity_index",
+        "aov_tendency",
+        "aov_index",
+        "seasonality_sensitivity",
+        "marketing_responsiveness",
+        "formula_version",
+    }
+
+    missing = required_columns - set(area_effect.columns)
+    record_check(
+        "Required columns present",
+        not missing,
+        f"Missing: {sorted(missing)}" if missing else "",
+    )
+
+    if missing:
+        print(f"Checks passed: 0/{len(checks)}")
+        return False
+
+    record_check(
+        "One row per area",
+        area_effect["area_id"].notna().all()
+        and area_effect["area_id"].is_unique,
+    )
+
+    expected_ids = set(area_characteristics["area_id"])
+    actual_ids = set(area_effect["area_id"])
+
+    record_check(
+        "Area coverage matches source",
+        actual_ids == expected_ids
+        and len(area_effect) == len(area_characteristics),
+        f"Expected {len(expected_ids)}, found {len(actual_ids)}",
+    )
+
+    record_check(
+        "Formula version is correct",
+        area_effect["formula_version"].eq("area_effect_v1").all(),
+    )
+
+    record_check(
+        "Experiment groups are valid",
+        area_effect["experiment_group"].isin(
+            ["treatment", "control"]
+        ).all(),
+    )
+
+    numeric_columns = [
+        "baseline_demand",
+        "customer_volume_potential",
+        "baseline_acquisition_potential",
+        "purchase_propensity",
+        "purchase_propensity_index",
+        "aov_tendency",
+        "aov_index",
+        "seasonality_sensitivity",
+        "marketing_responsiveness",
+    ]
+
+    finite = np.isfinite(
+        area_effect[numeric_columns].to_numpy(dtype=float)
+    ).all()
+
+    record_check("Numeric values are finite", finite)
+
+    source = area_characteristics.merge(
+        experiment_assignment[["area_id", "experiment_group"]],
+        on="area_id",
+        how="left",
+        validate="one_to_one",
+    )
+
+    actual = area_effect.merge(
+        source,
+        on="area_id",
+        how="outer",
+        suffixes=("_truth", "_source"),
+        indicator=True,
+        validate="one_to_one",
+    )
+
+    record_check(
+        "Area records match simulator source",
+        actual["_merge"].eq("both").all(),
+    )
+
+    source_columns = [
+        "baseline_demand",
+        "customer_volume_potential",
+        "purchase_propensity",
+        "aov_tendency",
+        "seasonality_sensitivity",
+        "marketing_responsiveness",
+        "experiment_group",
+    ]
+
+    source_matches = actual["_merge"].eq("both").all()
+
+    if source_matches:
+        for column in source_columns:
+            if column == "experiment_group":
+                source_matches = source_matches and actual[
+                    f"{column}_truth"
+                ].eq(actual[f"{column}_source"]).all()
+            else:
+                source_matches = source_matches and np.allclose(
+                    actual[f"{column}_truth"].to_numpy(dtype=float),
+                    actual[f"{column}_source"].to_numpy(dtype=float),
+                    rtol=1e-9,
+                    atol=1e-10,
+                )
+
+    record_check("Hidden parameters reconcile to source", source_matches)
+
+    expected_acquisition = (
+        area_effect["baseline_demand"]
+        * area_effect["customer_volume_potential"]
+        * area_effect["marketing_responsiveness"]
+    )
+
+    record_check(
+        "Baseline acquisition potential reconciles",
+        np.allclose(
+            area_effect["baseline_acquisition_potential"],
+            expected_acquisition,
+        ),
+    )
+
+    record_check(
+        "Purchase propensity index reconciles",
+        np.allclose(
+            area_effect["purchase_propensity_index"],
+            area_effect["purchase_propensity"]
+            / area_effect["purchase_propensity"].mean(),
+        ),
+    )
+
+    record_check(
+        "AOV index reconciles",
+        np.allclose(
+            area_effect["aov_index"],
+            area_effect["aov_tendency"]
+            / area_effect["aov_tendency"].mean(),
+        ),
+    )
+
+    record_check(
+        "Positive demand and propensity parameters",
+        (
+            area_effect[
+                [
+                    "baseline_demand",
+                    "customer_volume_potential",
+                    "purchase_propensity",
+                    "aov_tendency",
+                ]
+            ] > 0
+        ).all().all(),
+    )
+
+    output_path = Path(output_dir) / "true_area_effect.csv"
+    file_matches = False
+
+    if output_path.is_file():
+        try:
+            saved = pd.read_csv(output_path)
+            pd.testing.assert_frame_equal(
+                saved.reset_index(drop=True),
+                area_effect.reset_index(drop=True),
+                check_dtype=False,
+                check_exact=False,
+                rtol=1e-9,
+                atol=1e-10,
+            )
+            file_matches = True
+        except (AssertionError, ValueError):
+            file_matches = False
+
+    record_check("Saved CSV matches generated artifact", file_matches)
+
+    passed_count = sum(passed for _, passed, _ in checks)
+    print(f"\nChecks passed: {passed_count}/{len(checks)}")
+
+    all_passed = passed_count == len(checks)
+    print("Result: ALL CHECKS PASSED" if all_passed else "Result: FAILED")
+
+    return all_passed
+
+def validate_true_experiment_effect(
+    true_experiment_effect,
+    output_dir=SIMULATION_TRUTH_DIR,
+    ):
+    """
+    Validate the true experiment-effect artifact.
+
+    Checks schema, mechanism coverage, metadata, numeric integrity,
+    counterfactual reconciliation, uplift calculations, and saved CSV.
+    """
+
+    checks_passed = 0
+    checks_failed = 0
+
+    def check(name, condition):
+        nonlocal checks_passed, checks_failed
+
+        if condition:
+            checks_passed += 1
+            print(f"PASS: {name}")
+        else:
+            checks_failed += 1
+            print(f"FAIL: {name}")
+
+    print("\n=== Validate True Experiment Effect ===")
+
+    required_columns = {
+        "effect_mechanism",
+        "counterfactual_scope",
+        "outcome_metric",
+        "baseline_expected_outcome",
+        "treatment_expected_outcome",
+        "expected_incremental_outcome",
+        "relative_uplift",
+        "experiment_id",
+        "experiment_start",
+        "experiment_end",
+        "spend_multiplier",
+        "formula_version",
+    }
+
+    # 1. Required schema
+    check(
+        "Required columns exist",
+        required_columns.issubset(
+            true_experiment_effect.columns
+        ),
+    )
+
+    if not required_columns.issubset(
+        true_experiment_effect.columns
+    ):
+        print(
+            f"\nValidation stopped: missing columns "
+            f"{sorted(required_columns - set(true_experiment_effect.columns))}"
+        )
+        return False
+
+    df = true_experiment_effect.copy()
+
+    # 2. Row count
+    check(
+        "Exactly two effect-mechanism rows",
+        len(df) == 2,
+    )
+
+    # 3. Mechanism coverage
+    expected_mechanisms = {
+        "customer_acquisition",
+        "existing_customer_purchase_response",
+    }
+
+    check(
+        "Both expected mechanisms are present exactly once",
+        set(df["effect_mechanism"]) == expected_mechanisms
+        and not df["effect_mechanism"].duplicated().any(),
+    )
+
+    # 4. Outcome metric mapping
+    expected_metrics = {
+        "customer_acquisition": "expected_new_customers",
+        "existing_customer_purchase_response": "expected_purchases",
+    }
+
+    check(
+        "Outcome metrics match their mechanisms",
+        all(
+            row["outcome_metric"]
+            == expected_metrics[row["effect_mechanism"]]
+            for _, row in df.iterrows()
+        ),
+    )
+
+    # 5. Formula-version labels
+    expected_versions = {
+        "customer_acquisition": "experiment_acquisition_v1",
+        "existing_customer_purchase_response":
+            "experiment_purchase_response_v1",
+    }
+
+    check(
+        "Formula versions are correctly labeled",
+        all(
+            row["formula_version"]
+            == expected_versions[row["effect_mechanism"]]
+            for _, row in df.iterrows()
+        ),
+    )
+
+    # 6. Scope labels
+    check(
+        "Counterfactual scope is documented",
+        df["counterfactual_scope"].notna().all()
+        and df["counterfactual_scope"].astype(str).str.strip().ne("").all(),
+    )
+
+    # 7. Experiment ID
+    check(
+        "Experiment ID is populated consistently",
+        df["experiment_id"].notna().all()
+        and df["experiment_id"].nunique() == 1
+        and df["experiment_id"].iloc[0] == "EXP_001",
+    )
+
+    # 8. Experiment dates
+    try:
+        starts = pd.to_datetime(df["experiment_start"], errors="raise")
+        ends = pd.to_datetime(df["experiment_end"], errors="raise")
+
+        valid_dates = (
+            starts.notna().all()
+            and ends.notna().all()
+            and (starts <= ends).all()
+            and starts.nunique() == 1
+            and ends.nunique() == 1
+        )
+    except (TypeError, ValueError):
+        valid_dates = False
+
+    check(
+        "Experiment dates are valid and consistent",
+        valid_dates,
+    )
+
+    # 9. Spend multiplier
+    multipliers = pd.to_numeric(
+        df["spend_multiplier"], errors="coerce"
+    )
+
+    check(
+        "Spend multiplier matches the experiment configuration",
+        multipliers.notna().all()
+        and np.isfinite(multipliers.to_numpy(dtype=float)).all()
+        and np.allclose(
+            multipliers.to_numpy(dtype=float),
+            TREATMENT_SPEND_MULTIPLIER,
+        ),
+    )
+
+    numeric_columns = [
+        "baseline_expected_outcome",
+        "treatment_expected_outcome",
+        "expected_incremental_outcome",
+        "relative_uplift",
+    ]
+
+    for column in numeric_columns:
+        df[column] = pd.to_numeric(
+            df[column], errors="coerce"
+        )
+
+    numeric_values = df[numeric_columns].to_numpy(dtype=float)
+
+    # 10. Numeric integrity
+    check(
+        "All numeric outcome values are finite",
+        np.isfinite(numeric_values).all(),
+    )
+
+    numeric_valid = np.isfinite(numeric_values).all()
+
+    # The remaining numeric checks require valid numeric values.
+    if numeric_valid:
+        # 11. Baseline outcomes
+        check(
+            "Baseline expected outcomes are positive",
+            df["baseline_expected_outcome"].gt(0).all(),
+        )
+
+        # 12. Treatment outcomes
+        check(
+            "Treatment expected outcomes are not below baseline",
+            (
+                df["treatment_expected_outcome"]
+                >= df["baseline_expected_outcome"]
+            ).all(),
+        )
+
+        # 13. Incremental outcome reconciliation
+        calculated_incremental = (
+            df["treatment_expected_outcome"]
+            - df["baseline_expected_outcome"]
+        )
+
+        check(
+            "Incremental outcomes reconcile to treatment minus baseline",
+            np.allclose(
+                df["expected_incremental_outcome"],
+                calculated_incremental,
+                rtol=1e-9,
+                atol=1e-8,
+            ),
+        )
+
+        # 14. Relative uplift reconciliation
+        calculated_uplift = (
+            df["expected_incremental_outcome"]
+            / df["baseline_expected_outcome"]
+        )
+
+        check(
+            "Relative uplift reconciles to incremental divided by baseline",
+            np.allclose(
+                df["relative_uplift"],
+                calculated_uplift,
+                rtol=1e-9,
+                atol=1e-8,
+            ),
+        )
+
+        # 15. Expected incremental effects
+        check(
+            "Expected incremental outcomes are non-negative",
+            df["expected_incremental_outcome"].ge(0).all(),
+        )
+    else:
+        for name in [
+            "Baseline expected outcomes are positive",
+            "Treatment outcomes are not below baseline",
+            "Incremental outcomes reconcile",
+            "Relative uplift reconciles",
+            "Expected incremental outcomes are non-negative",
+        ]:
+            check(name, False)
+
+    # 16. Persisted CSV exists and matches the returned artifact
+    output_path = (
+        Path(output_dir) / "true_experiment_effect.csv"
+    )
+
+    file_exists = output_path.exists()
+    check(
+        "Saved experiment-effect CSV exists",
+        file_exists,
+    )
+
+    if file_exists:
+        try:
+            saved_df = pd.read_csv(output_path)
+
+            same_schema = (
+                list(saved_df.columns) == list(df.columns)
+            )
+
+            same_shape = saved_df.shape == df.shape
+
+            if same_schema and same_shape:
+                # Compare all values after CSV serialization.
+                returned_for_compare = df.reset_index(drop=True)
+                saved_for_compare = saved_df.reset_index(drop=True)
+                date_columns = ["experiment_start", "experiment_end"]
+
+                for col in date_columns:
+                    returned_for_compare[col] = pd.to_datetime(
+                        returned_for_compare[col]
+                    ).dt.strftime("%Y-%m-%d")
+
+                    saved_for_compare[col] = pd.to_datetime(
+                        saved_for_compare[col]
+                    ).dt.strftime("%Y-%m-%d")
+
+                try:
+                    pd.testing.assert_frame_equal(
+                        returned_for_compare,
+                        saved_for_compare,
+                        check_dtype=False,
+                        check_exact=False,
+                        rtol=1e-9,
+                        atol=1e-8,
+                    )
+                    file_matches = True
+                except AssertionError:
+                    file_matches = False
+            else:
+                file_matches = False
+
+        except Exception as exc:
+            print(f"CSV comparison error: {exc}")
+            file_matches = False
+
+        check(
+            "Saved CSV matches the returned artifact",
+            file_matches,
+        )
+    else:
+        check(
+            "Saved CSV matches the returned artifact",
+            False,
+        )
+
+    # Summary
+    total_checks = checks_passed + checks_failed
+
+    print("\n=== Validation Summary ===")
+    print(f"Passed: {checks_passed}/{total_checks}")
+    print(f"Failed: {checks_failed}/{total_checks}")
+
+    if checks_failed:
+        print("Result: FAILED")
+        return False
+
+    print("Result: PASSED")
+    return True
+
+
+
 def generate_marketing_touchpoints(
     customers,
     hidden_customer_characteristics,
     channel_responsiveness,
-    marketing_performance,
-):
+    marketing_performance, ):
     """Generate customer-level marketing click touchpoints (vectorized)."""
 
     TOUCHPOINT_CAPTURE_RATE = 0.02
@@ -3519,7 +5425,7 @@ def validate_day_1(
     hidden_customer_characteristics,
     marketing_performance,
     transactions,
-):
+    ):
     
     print("\n" + "=" * 70)
     print("DAY 1 - CUSTOMER LIFECYCLE")
@@ -4272,7 +6178,7 @@ def validate_day_2(
     customers,
     hidden_customer_characteristics,
     transactions,
-):
+    ):
     # ============================================================
     # DAY 2 - CUSTOMER ECONOMICS AUDIT
     # ============================================================
@@ -4978,7 +6884,7 @@ def validate_day_3(
     channel_responsiveness,
     marketing_performance,
     transactions,
-):
+    ):
     # ============================================================
     # DAY 3 - MARKETING RESPONSE SYSTEM
     # ============================================================
@@ -6376,7 +8282,7 @@ def validate_touchpoint_structure(
     customers,
     hidden_customer_characteristics,
     marketing_performance,
-):
+    ):
     """Validate structural integrity of customer-level marketing touchpoints."""
 
     print("\n" + "=" * 70)
@@ -6605,7 +8511,7 @@ def validate_journey_behavior(
     customers,
     transactions,
     run_purchase_journey_diagnostic=False,
-):
+    ):
     """Validate journey behavior and optional purchase attribution readiness.
  
     Eligibility rule: a touchpoint is eligible for a purchase if it falls in
@@ -7140,9 +9046,114 @@ if __name__ == "__main__":
     if not channel_incrementality_validation:
         raise ValueError("True channel incrementality validation failed.")
 
+    true_customer_value = generate_true_customer_value(
+        customers=customers,
+        hidden_customer_characteristics=hidden_customer_characteristics,
+        area_characteristics=area_characteristics,
+        transactions=transactions,
+    )
+
+    print_memory("after generating true customer value")
+
+    customer_value_validation = validate_true_customer_value(
+        customer_value=true_customer_value,
+        customers=customers,
+        hidden_customer_characteristics=hidden_customer_characteristics,
+        area_characteristics=area_characteristics,
+        transactions=transactions,
+    )
+
+    print_memory("after validating true customer value")
+
+    if not customer_value_validation:
+        raise ValueError("True customer value validation failed.")
+
+
+    true_area_effect = generate_true_area_effect(
+        area_characteristics=area_characteristics,
+        experiment_assignment=experiment_assignment,
+    )
+    print_memory("after generating true area effect")
+
+    area_effect_validation = validate_true_area_effect(
+        area_effect=true_area_effect,
+        area_characteristics=area_characteristics,
+        experiment_assignment=experiment_assignment,
+    )
+    print_memory("after validating true area effect")
+
+    if not area_effect_validation:
+        raise ValueError("True area-effect validation failed.")
+    
+    true_experiment_effect = generate_true_experiment_effect(
+        customers=customers,
+        hidden_customer_characteristics=hidden_customer_characteristics,
+        channel_responsiveness=channel_responsiveness,
+        area_characteristics=area_characteristics,
+        marketing_performance=marketing_performance,
+        experiment_assignment=experiment_assignment,
+    )
+
+    saved_path = SIMULATION_TRUTH_DIR / "true_experiment_effect.csv"
+
+    returned_df = true_experiment_effect.reset_index(drop=True).copy()
+    saved_df = pd.read_csv(saved_path).reset_index(drop=True)
+
+    print("\n=== Experiment-Effect CSV Mismatch Diagnostic ===")
+    print("Returned shape:", returned_df.shape)
+    print("Saved shape:", saved_df.shape)
+    print("\nReturned dtypes:\n", returned_df.dtypes)
+    print("\nSaved dtypes:\n", saved_df.dtypes)
+
+    if list(returned_df.columns) != list(saved_df.columns):
+        print("\nCOLUMN ORDER OR NAME MISMATCH")
+        print("Returned:", list(returned_df.columns))
+        print("Saved:   ", list(saved_df.columns))
+
+    elif returned_df.shape != saved_df.shape:
+        print("\nROW OR COLUMN COUNT MISMATCH")
+
+    else:
+        for col in returned_df.columns:
+            returned_values = returned_df[col]
+            saved_values = saved_df[col]
+
+            if col in returned_df.select_dtypes(include="number").columns:
+                returned_num = pd.to_numeric(returned_values, errors="coerce")
+                saved_num = pd.to_numeric(saved_values, errors="coerce")
+                equal = np.isclose(
+                    returned_num,
+                    saved_num,
+                    rtol=1e-9,
+                    atol=1e-8,
+                    equal_nan=True,
+                )
+            else:
+                equal = (
+                    returned_values.fillna("").astype(str).str.strip()
+                    == saved_values.fillna("").astype(str).str.strip()
+                ).to_numpy()
+
+            if not np.all(equal):
+                print(f"\nMISMATCH: {col}")
+                for i in np.where(~equal)[0][:5]:
+                    print(
+                        f"  Row {i}: returned={returned_values.iloc[i]!r}, "
+                        f"saved={saved_values.iloc[i]!r}"
+                    )
+
+        print("\n=== End Diagnostic ===")
+
+    experiment_effect_valid = validate_true_experiment_effect(
+        true_experiment_effect=true_experiment_effect,
+    )
+
+    if not experiment_effect_valid:
+        raise ValueError(
+            "True experiment-effect validation failed."
+        )
+
     print("\nDay 5 partial run completed.")
-
-
 
 
     # marketing_touchpoints = generate_marketing_touchpoints(

@@ -2386,3 +2386,293 @@ Purchase-to-Journey Mapping
 The current journey segmentation and mapping rules are locked for the current simulation stage.
 
 The next stage will focus on hidden simulation truth and full-generator validation before downstream attribution, incrementality, customer economics, and budget-allocation analysis begin.
+
+# Day 7 - Hidden Simulation Truth
+
+Status: In Progress
+
+Focus: Generate and validate hidden simulation-truth artifacts that record the underlying response mechanisms, channel incrementality, customer economics, area characteristics, and expected experiment effects for downstream analytical validation.
+
+* * *
+
+## Objective
+
+Generate hidden-truth datasets from the existing synthetic business simulator.
+
+The objective is to establish known reference values for evaluating whether downstream analytical methods can recover the underlying relationships and expected outcomes encoded in the simulation.
+
+The hidden-truth artifacts are kept separate from the primary analytical inputs. They represent the simulator's underlying mechanisms and reference outcomes rather than additional observed business data.
+
+The intended dependency is:
+
+    `Hidden Simulation Parameters
+                ↓
+        Response Mechanisms
+                ↓
+        Expected Outcomes
+                ↓
+        Hidden-Truth Artifacts
+                ↓
+        Analytical Validation
+    `
+
+* * *
+
+## 1. True Response Curves
+
+### Change
+
+Generated `true_response_curves.csv` to record the underlying marketing response relationships for customer acquisition and existing-customer purchase response.
+
+The artifact contains 250 rows:
+
+  * 50 acquisition response-curve points
+  * 200 purchase-response curve points across four marketing channels
+
+The response curves provide reference values for evaluating how marketing exposure affects expected outcomes, including the intended diminishing-return behavior.
+
+### Validation
+
+The artifact was checked for its expected structure and consistency.
+
+    `Checks Passed: 52/52
+    Result: ALL CHECKS PASSED
+    `
+
+### Conclusion
+
+The response-curve artifact was generated and passed all implemented validation checks.
+
+* * *
+
+## 2. True Channel Incrementality
+
+### Change
+
+Generated `true_channel_incrementality.csv` to estimate expected incremental purchases and contribution margin under a hypothetical 25% increase in channel spend.
+
+The calculation compares baseline and increased-spend scenarios using the simulator's channel-response mechanism.
+
+The artifact includes:
+
+  * Baseline and incremental spend
+  * Expected baseline and treatment purchases
+  * Expected incremental purchases
+  * Expected incremental contribution margin in USD
+  * Incremental contribution margin per incremental dollar
+
+The scope is explicitly limited to existing-customer purchase response. It does not represent the full causal experiment effect or include all acquisition and customer-lifetime effects.
+
+### Validation
+
+The artifact was checked for channel coverage, numerical validity, spend reconciliation, incremental outcome calculations, contribution-margin reconciliation, efficiency metrics, scope, and formula version.
+
+    `Checks Passed: 18/18
+    Result: ALL CHECKS PASSED
+    `
+
+### Conclusion
+
+The channel incrementality artifact was generated and passed all implemented validation checks. The results provide modeled channel-level reference values for later marginal-return and budget-allocation analysis.
+
+* * *
+
+## 3. True Customer Value
+
+### Change
+
+Generated `true_customer_value.csv` to record expected customer economics and realized contribution margin over the simulation period.
+
+The artifact contains 121,690 customers and connects hidden customer characteristics with expected unit economics and realized transaction history.
+
+Contribution margin is defined as:
+
+    `Contribution Margin
+    =
+    Revenue - Subsidy - Discount
+    `
+
+Marketing spend remains separate from transaction-level contribution margin.
+
+Expected unit economics represent modeled customer-level economic expectations. Realized contribution margin represents the economics observed in the generated transactions. These measures serve different purposes and are not interchangeable.
+
+### Validation
+
+The artifact was checked for customer uniqueness and coverage, numerical validity, consistency with hidden customer characteristics, expected AOV and cancellation calculations, contribution-margin calculations, booking counts, and reconciliation to realized transactions.
+
+    `Checks Passed: 15/15
+    Result: ALL CHECKS PASSED
+    `
+
+Total realized contribution margin across the simulation period was $2,745,247.50.
+
+### Conclusion
+
+The customer-value artifact was generated and passed all implemented validation checks. It provides a customer-level reference for evaluating downstream customer economics and contribution-margin analysis.
+
+* * *
+
+## 4. True Area Effect
+
+### Change
+
+Generated `true_area_effect.csv` to record the underlying characteristics of the 20 experimental areas.
+
+The artifact includes:
+
+  * Experiment assignment
+  * Baseline demand and customer volume potential
+  * Baseline acquisition potential
+  * Purchase propensity and its index
+  * Average order value tendency and its index
+  * Seasonality sensitivity
+  * Marketing responsiveness
+
+These characteristics capture the heterogeneity built into the simulator and provide reference values for understanding differences in outcomes across treatment and control areas.
+
+### Validation
+
+The artifact was checked for required columns, area uniqueness and coverage, valid experiment groups, numerical validity, consistency with source records and hidden parameters, derived metric reconciliation, and saved-file consistency.
+
+    `Checks Passed: 13/13
+    Result: ALL CHECKS PASSED
+    `
+
+### Conclusion
+
+The area-effect artifact was generated for all 20 areas and passed all implemented validation checks. The underlying area characteristics are available as reference values for subsequent experiment analysis.
+
+* * *
+
+## 5. True Experiment Effect
+
+### Change
+
+Generated `true_experiment_effect.csv` to record expected baseline and treatment outcomes for two modeled mechanisms:
+
+  * Customer acquisition
+  * Existing-customer purchase response
+
+The artifact compares expected outcomes under the baseline and treatment scenarios using the experiment's configured spend multiplier.
+
+The main calculations are:
+
+    `Incremental Outcome
+    =
+    Treatment Expected Outcome
+    - Baseline Expected Outcome
+
+    Relative Uplift
+    =
+    Incremental Outcome
+    / Baseline Expected Outcome
+    `
+
+### Validation
+
+The initial validation passed the structural, metadata, numerical, and arithmetic checks but failed when comparing the returned DataFrame with the saved CSV.
+
+The discrepancy was caused by date representation: the returned DataFrame stored experiment dates as datetime values, while the saved CSV stored them as strings.
+
+The comparison was updated to normalize the date columns to the same representation before comparing the generated artifact with the saved file. No change to the generator was required.
+
+The subsequent validation produced:
+
+    `Checks Passed: 17/17
+    Result: PASSED
+    `
+
+### Current Reference Results
+
+Mechanism | Baseline Expected Outcome | Treatment Expected Outcome | Expected Incremental Outcome | Relative Uplift
+--- | ---: | ---: | ---: | ---:
+Customer acquisition | 2,630.01 | 2,656.83 | 26.82 | 1.02%
+Existing-customer purchase response | 3,943.41 | 3,988.99 | 45.59 | 1.16%
+
+These are expected outcomes produced by the current simulation formulas. They are not the final Difference-in-Differences estimates and do not independently establish the causal effect recovered from observed data.
+
+### Conclusion
+
+The experiment-effect artifact passed all implemented validation checks after the date-format comparison was corrected.
+
+The formula logic still requires an independent audit against the actual generator and experiment design before the artifact can be considered fully verified.
+
+* * *
+
+## 6. Hidden-Truth Validation Summary
+
+All five hidden-truth artifacts were generated and their individual validators passed.
+
+Artifact | Checks Passed | Result
+--- | ---: | ---
+`true_response_curves.csv` | 52/52 | Passed
+`true_channel_incrementality.csv` | 18/18 | Passed
+`true_customer_value.csv` | 15/15 | Passed
+`true_area_effect.csv` | 13/13 | Passed
+`true_experiment_effect.csv` | 17/17 | Passed
+Total | 115/115 | Passed
+
+The implemented checks cover artifact structure, entity coverage, numerical validity, formula reconciliation, source consistency, metadata, and saved-file consistency where applicable.
+
+These results establish consistency with the implemented validation rules. They do not independently prove that every formula accurately represents the intended simulation design.
+
+* * *
+
+## 7. Day 7 Decisions
+
+The following decisions were retained during this stage:
+
+  * Hidden-truth artifacts remain separate from the primary analytical inputs.
+  * Response curves provide reference values for the simulator's marketing-response mechanisms.
+  * Channel incrementality is scoped to existing-customer purchase response under a hypothetical 25% spend increase.
+  * Customer value distinguishes expected unit economics from realized contribution margin.
+  * Contribution margin is defined as `revenue - subsidy - discount`.
+  * Area-effect truth records the underlying characteristics of the 20 experimental areas.
+  * Experiment-effect truth records expected outcomes for customer acquisition and existing-customer purchase response.
+  * Expected experiment outcomes are distinguished from estimates obtained through the downstream Difference-in-Differences analysis.
+  * Artifact validation and independent formula verification are treated as separate requirements.
+  * The experiment-effect formulas must be audited before the artifact is considered fully verified.
+  * Code cleanup and optimization will take place only after the generator and validation logic have been verified.
+
+* * *
+
+## 8. What Was Actually Completed
+
+The hidden-truth generation stage was implemented and the five artifacts passed their individual validators.
+
+The following were completed:
+
+  * True response-curve generation and validation
+  * True channel-incrementality generation and validation
+  * True customer-value generation and validation
+  * True area-effect generation and validation
+  * True experiment-effect generation and validation
+  * Saved CSV consistency checks for all applicable artifacts
+  * Correction of date representation in the experiment-effect validation comparison
+  * Initial validation summary across all five artifacts
+
+The full generator run completed, with memory usage reaching approximately 410,496 MB during the customer-value and area-effect stages. Further full-generation runs should be avoided unless required by a specific validation or code change.
+
+* * *
+
+## 9. Remaining Work - Day 7 Part 2
+
+The following work remains before the hidden-truth and data-generator stages can be considered complete:
+
+  1. Audit the experiment-effect formulas against the implemented generator logic and experiment design.
+  2. Run full-data validation across all generated datasets.
+  3. Run Day 1–4 regression checks for customer lifecycle, transaction economics, marketing response, customer journeys, and attribution.
+  4. Confirm analytical readiness for Difference-in-Differences, customer economics, incrementality, and budget allocation.
+  5. Clean up and optimize the code only after correctness has been established.
+  6. Update `METHODOLOGY.md`, `ASSUMPTIONS.md`, and `PROJECT_CONTEXT.md` to reflect the verified implementation and limitations.
+  7. Run final validation after cleanup and confirm that the documentation matches the final code and generated outputs.
+
+* * *
+
+## 10. Day 7 Conclusion
+
+The five hidden-truth artifacts have been generated and passed 115 implemented validation checks. They establish reference datasets for marketing response, channel incrementality, customer economics, area heterogeneity, and expected experiment effects.
+
+The current milestone is complete for artifact generation and initial validation, but the overall Day 7 work remains in progress.
+
+The next stage will audit the experiment-effect formulas, validate the complete generated dataset, run regression checks, and confirm analytical readiness. Code cleanup and documentation updates will follow after the underlying logic has been verified.
